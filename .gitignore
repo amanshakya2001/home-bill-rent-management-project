@@ -25,19 +25,24 @@ expo-env.d.ts
 npm-debug.*
 yarn-debug.*
 yarn-error.*
+*.log
 
 # macOS
 .DS_Store
 *.pem
 
 # local env files
+.env
 .env*.local
 
 # typescript
 *.tsbuildinfo
 
+# testing
+coverage/
+
 app-example
 
-# generated native folders
+# generated native folders (run `npx expo prebuild` to regenerate)
 /ios
 /android
