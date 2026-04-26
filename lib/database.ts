@@ -9,10 +9,8 @@ export type Bill = {
   units_consumed: number;
   price_per_unit: number;
   total_amount: number;
-  due_date: string;
   status: 'paid' | 'unpaid';
   paid_date: string | null;
-  notification_id: string | null;
   image_uri: string | null;
 };
 
@@ -21,17 +19,28 @@ export type Rent = {
   month: number;
   year: number;
   amount: number;
-  due_date: string;
   status: 'paid' | 'unpaid';
   paid_date: string | null;
-  notification_id: string | null;
 };
 
 export type AppSettings = {
   apartment_name: string;
-  bill_due_day: number;
-  rent_due_day: number;
   notifications_enabled: number;
+};
+
+export type SplitRecord = {
+  id: number;
+  period: string;
+  total_amount: number;
+  total_units: number;
+  per_unit: number;
+  our_units: number;
+  our_amount: number;
+  top_floor_units: number;
+  top_floor_amount: number;
+  underground_units: number;
+  underground_amount: number;
+  created_at: string;
 };
 
 export async function initDatabase(db: SQLite.SQLiteDatabase): Promise<void> {
@@ -47,10 +56,8 @@ export async function initDatabase(db: SQLite.SQLiteDatabase): Promise<void> {
       units_consumed REAL NOT NULL,
       price_per_unit REAL NOT NULL,
       total_amount REAL NOT NULL,
-      due_date TEXT NOT NULL,
       status TEXT NOT NULL DEFAULT 'unpaid',
       paid_date TEXT,
-      notification_id TEXT,
       image_uri TEXT,
       created_at TEXT DEFAULT (datetime('now'))
     );
@@ -60,23 +67,34 @@ export async function initDatabase(db: SQLite.SQLiteDatabase): Promise<void> {
       month INTEGER NOT NULL,
       year INTEGER NOT NULL,
       amount REAL NOT NULL,
-      due_date TEXT NOT NULL,
       status TEXT NOT NULL DEFAULT 'unpaid',
       paid_date TEXT,
-      notification_id TEXT,
+      created_at TEXT DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS split_records (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      period TEXT NOT NULL,
+      total_amount REAL NOT NULL,
+      total_units REAL NOT NULL,
+      per_unit REAL NOT NULL,
+      our_units REAL NOT NULL,
+      our_amount REAL NOT NULL,
+      top_floor_units REAL NOT NULL,
+      top_floor_amount REAL NOT NULL,
+      underground_units REAL NOT NULL,
+      underground_amount REAL NOT NULL,
       created_at TEXT DEFAULT (datetime('now'))
     );
 
     CREATE TABLE IF NOT EXISTS app_settings (
       id INTEGER PRIMARY KEY CHECK (id = 1),
       apartment_name TEXT NOT NULL DEFAULT 'My Apartment',
-      bill_due_day INTEGER NOT NULL DEFAULT 10,
-      rent_due_day INTEGER NOT NULL DEFAULT 1,
       notifications_enabled INTEGER NOT NULL DEFAULT 1
     );
 
-    INSERT OR IGNORE INTO app_settings (id, apartment_name, bill_due_day, rent_due_day, notifications_enabled)
-    VALUES (1, 'My Apartment', 10, 1, 1);
+    INSERT OR IGNORE INTO app_settings (id, apartment_name, notifications_enabled)
+    VALUES (1, 'My Apartment', 1);
   `);
 
   // Migrations for existing databases
@@ -106,15 +124,15 @@ export function getBills(db: SQLite.SQLiteDatabase): Promise<Bill[]> {
 
 export async function addBill(
   db: SQLite.SQLiteDatabase,
-  bill: Omit<Bill, 'id' | 'notification_id'>
+  bill: Omit<Bill, 'id'>
 ): Promise<number> {
   const result = await db.runAsync(
     `INSERT INTO electricity_bills
-      (month, year, previous_reading, current_reading, units_consumed, price_per_unit, total_amount, due_date, status, paid_date, image_uri)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      (month, year, previous_reading, current_reading, units_consumed, price_per_unit, total_amount, status, paid_date, image_uri)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     bill.month, bill.year, bill.previous_reading, bill.current_reading,
     bill.units_consumed, bill.price_per_unit, bill.total_amount,
-    bill.due_date, bill.status, bill.paid_date ?? null, bill.image_uri ?? null
+    bill.status, bill.paid_date ?? null, bill.image_uri ?? null
   );
   return result.lastInsertRowId;
 }
@@ -140,18 +158,6 @@ export async function updateBillStatus(
   );
 }
 
-export async function saveBillNotificationId(
-  db: SQLite.SQLiteDatabase,
-  id: number,
-  notificationId: string | null
-): Promise<void> {
-  await db.runAsync(
-    'UPDATE electricity_bills SET notification_id = ? WHERE id = ?',
-    notificationId,
-    id
-  );
-}
-
 export async function updateBill(
   db: SQLite.SQLiteDatabase,
   id: number,
@@ -159,16 +165,15 @@ export async function updateBill(
     month: number; year: number;
     previous_reading: number; current_reading: number;
     units_consumed: number; price_per_unit: number; total_amount: number;
-    due_date: string;
   }
 ): Promise<void> {
   await db.runAsync(
     `UPDATE electricity_bills SET
       month = ?, year = ?, previous_reading = ?, current_reading = ?,
-      units_consumed = ?, price_per_unit = ?, total_amount = ?, due_date = ?
+      units_consumed = ?, price_per_unit = ?, total_amount = ?
      WHERE id = ?`,
     data.month, data.year, data.previous_reading, data.current_reading,
-    data.units_consumed, data.price_per_unit, data.total_amount, data.due_date, id
+    data.units_consumed, data.price_per_unit, data.total_amount, id
   );
 }
 
@@ -185,12 +190,12 @@ export function getRentPayments(db: SQLite.SQLiteDatabase): Promise<Rent[]> {
 
 export async function addRentPayment(
   db: SQLite.SQLiteDatabase,
-  rent: Omit<Rent, 'id' | 'notification_id'>
+  rent: Omit<Rent, 'id'>
 ): Promise<number> {
   const result = await db.runAsync(
-    `INSERT INTO rent_payments (month, year, amount, due_date, status, paid_date)
-     VALUES (?, ?, ?, ?, ?, ?)`,
-    rent.month, rent.year, rent.amount, rent.due_date, rent.status, rent.paid_date ?? null
+    `INSERT INTO rent_payments (month, year, amount, status, paid_date)
+     VALUES (?, ?, ?, ?, ?)`,
+    rent.month, rent.year, rent.amount, rent.status, rent.paid_date ?? null
   );
   return result.lastInsertRowId;
 }
@@ -208,26 +213,14 @@ export async function updateRentStatus(
   );
 }
 
-export async function saveRentNotificationId(
-  db: SQLite.SQLiteDatabase,
-  id: number,
-  notificationId: string | null
-): Promise<void> {
-  await db.runAsync(
-    'UPDATE rent_payments SET notification_id = ? WHERE id = ?',
-    notificationId,
-    id
-  );
-}
-
 export async function updateRentPayment(
   db: SQLite.SQLiteDatabase,
   id: number,
-  data: { month: number; year: number; amount: number; due_date: string }
+  data: { month: number; year: number; amount: number }
 ): Promise<void> {
   await db.runAsync(
-    'UPDATE rent_payments SET month = ?, year = ?, amount = ?, due_date = ? WHERE id = ?',
-    data.month, data.year, data.amount, data.due_date, id
+    'UPDATE rent_payments SET month = ?, year = ?, amount = ? WHERE id = ?',
+    data.month, data.year, data.amount, id
   );
 }
 
@@ -235,12 +228,39 @@ export async function deleteRentPayment(db: SQLite.SQLiteDatabase, id: number): 
   await db.runAsync('DELETE FROM rent_payments WHERE id = ?', id);
 }
 
+// Split Records
+export async function addSplitRecord(
+  db: SQLite.SQLiteDatabase,
+  record: Omit<SplitRecord, 'id' | 'created_at'>
+): Promise<number> {
+  const result = await db.runAsync(
+    `INSERT INTO split_records
+      (period, total_amount, total_units, per_unit, our_units, our_amount,
+       top_floor_units, top_floor_amount, underground_units, underground_amount)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    record.period, record.total_amount, record.total_units, record.per_unit,
+    record.our_units, record.our_amount, record.top_floor_units, record.top_floor_amount,
+    record.underground_units, record.underground_amount
+  );
+  return result.lastInsertRowId;
+}
+
+export function getSplitRecords(db: SQLite.SQLiteDatabase): Promise<SplitRecord[]> {
+  return db.getAllAsync<SplitRecord>(
+    'SELECT * FROM split_records ORDER BY created_at DESC'
+  );
+}
+
+export async function deleteSplitRecord(db: SQLite.SQLiteDatabase, id: number): Promise<void> {
+  await db.runAsync('DELETE FROM split_records WHERE id = ?', id);
+}
+
 // Settings
 export async function getSettings(db: SQLite.SQLiteDatabase): Promise<AppSettings> {
   const settings = await db.getFirstAsync<AppSettings>(
-    'SELECT apartment_name, bill_due_day, rent_due_day, notifications_enabled FROM app_settings WHERE id = 1'
+    'SELECT apartment_name, notifications_enabled FROM app_settings WHERE id = 1'
   );
-  return settings ?? { apartment_name: 'My Apartment', bill_due_day: 10, rent_due_day: 1, notifications_enabled: 1 };
+  return settings ?? { apartment_name: 'My Apartment', notifications_enabled: 1 };
 }
 
 export async function updateSettings(
@@ -248,8 +268,7 @@ export async function updateSettings(
   settings: AppSettings
 ): Promise<void> {
   await db.runAsync(
-    `UPDATE app_settings SET apartment_name = ?, bill_due_day = ?, rent_due_day = ?, notifications_enabled = ?
-     WHERE id = 1`,
-    settings.apartment_name, settings.bill_due_day, settings.rent_due_day, settings.notifications_enabled
+    `UPDATE app_settings SET apartment_name = ?, notifications_enabled = ? WHERE id = 1`,
+    settings.apartment_name, settings.notifications_enabled
   );
 }

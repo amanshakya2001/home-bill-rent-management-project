@@ -1,41 +1,78 @@
 import { useSQLiteContext } from 'expo-sqlite';
-import { useCallback, useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 import {
-  Alert, Modal, ScrollView, StyleSheet, Text,
+  Alert, Animated, Modal, RefreshControl, ScrollView, StyleSheet, Text,
   TextInput, TouchableOpacity, View, KeyboardAvoidingView, Platform,
 } from 'react-native';
 import { useFocusEffect } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { Swipeable } from 'react-native-gesture-handler';
+import * as Haptics from 'expo-haptics';
 
 import {
   getRentPayments, addRentPayment, updateRentPayment, updateRentStatus,
-  deleteRentPayment, saveRentNotificationId, getSettings, type Rent,
+  deleteRentPayment, type Rent,
 } from '@/lib/database';
-import { scheduleDueNotification, cancelScheduledNotification } from '@/lib/notifications';
+import { useTheme, type Theme } from '@/lib/theme';
 
 const MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December'];
 const MONTHS_SHORT = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 
+function isOverdue(rent: Rent): boolean {
+  if (rent.status === 'paid') return false;
+  const now = new Date();
+  const rentDate = new Date(rent.year, rent.month - 1, 1);
+  const currentMonthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+  return rentDate < currentMonthStart;
+}
+
 export default function RentScreen() {
   const { top } = useSafeAreaInsets();
   const db = useSQLiteContext();
+  const t = useTheme();
   const [rents, setRents] = useState<Rent[]>([]);
+  const [refreshing, setRefreshing] = useState(false);
   const [showModal, setShowModal] = useState(false);
   const [editingRent, setEditingRent] = useState<Rent | null>(null);
+  const [search, setSearch] = useState('');
+  const [filterStatus, setFilterStatus] = useState<'all' | 'paid' | 'unpaid'>('all');
 
   const now = new Date();
   const [formMonth, setFormMonth] = useState(now.getMonth() + 1);
   const [formYear, setFormYear] = useState(now.getFullYear());
   const [amount, setAmount] = useState('');
-  const [dueDay, setDueDay] = useState('1');
 
   const load = useCallback(async () => {
-    const [r, s] = await Promise.all([getRentPayments(db), getSettings(db)]);
-    setRents(r);
-    setDueDay(String(s.rent_due_day));
+    setRents(await getRentPayments(db));
   }, [db]);
 
   useFocusEffect(useCallback(() => { load(); }, [load]));
+
+  async function onRefresh() {
+    setRefreshing(true);
+    await load();
+    setRefreshing(false);
+  }
+
+  const sortedRents = [...rents].sort((a, b) => {
+    const aOver = isOverdue(a) ? 0 : 1;
+    const bOver = isOverdue(b) ? 0 : 1;
+    if (aOver !== bOver) return aOver - bOver;
+    return b.year !== a.year ? b.year - a.year : b.month - a.month;
+  });
+
+  const filteredRents = sortedRents.filter(rent => {
+    if (filterStatus !== 'all' && rent.status !== filterStatus) return false;
+    if (search.trim()) {
+      const s = search.toLowerCase();
+      return MONTHS[rent.month - 1].toLowerCase().includes(s) ||
+        String(rent.year).includes(s) ||
+        String(rent.amount).includes(s);
+    }
+    return true;
+  });
+
+  const overdueCount = rents.filter(isOverdue).length;
 
   function openModal() {
     setEditingRent(null);
@@ -51,69 +88,18 @@ export default function RentScreen() {
     setFormMonth(rent.month);
     setFormYear(rent.year);
     setAmount(String(rent.amount));
-    setDueDay(String(parseInt(rent.due_date.split('-')[2])));
     setShowModal(true);
-  }
-
-  function showCardOptions(rent: Rent) {
-    Alert.alert(`${MONTHS_SHORT[rent.month - 1]} ${rent.year}`, 'Choose an action', [
-      { text: 'Edit', onPress: () => openEditModal(rent) },
-      {
-        text: rent.status === 'paid' ? 'Mark as Unpaid' : 'Mark as Paid',
-        onPress: () => toggleStatus(rent),
-      },
-      { text: 'Delete', style: 'destructive', onPress: () => confirmDelete(rent) },
-      { text: 'Cancel', style: 'cancel' },
-    ]);
   }
 
   async function saveRent() {
     const a = parseFloat(amount);
-    const day = parseInt(dueDay);
-
-    if (!a || isNaN(a) || a <= 0) {
-      Alert.alert('Error', 'Please enter a valid rent amount.');
-      return;
-    }
-    if (!day || day < 1 || day > 31) {
-      Alert.alert('Error', 'Please enter a valid due day (1–31).');
-      return;
-    }
-
-    const dueDateStr = `${formYear}-${String(formMonth).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
-
+    if (!a || isNaN(a) || a <= 0) { Alert.alert('Error', 'Please enter a valid rent amount.'); return; }
     if (editingRent) {
-      await updateRentPayment(db, editingRent.id, {
-        month: formMonth, year: formYear, amount: a, due_date: dueDateStr,
-      });
-      const s = await getSettings(db);
-      if (s.notifications_enabled && editingRent.status === 'unpaid') {
-        if (editingRent.notification_id) await cancelScheduledNotification(editingRent.notification_id);
-        const dueDate = new Date(formYear, formMonth - 1, day);
-        const notifId = await scheduleDueNotification(
-          'Rent Due',
-          `₹${a.toLocaleString('en-IN')} rent due for ${MONTHS[formMonth - 1]} ${formYear}`,
-          dueDate
-        );
-        if (notifId) await saveRentNotificationId(db, editingRent.id, notifId);
-      }
+      await updateRentPayment(db, editingRent.id, { month: formMonth, year: formYear, amount: a });
     } else {
-      const id = await addRentPayment(db, {
-        month: formMonth, year: formYear,
-        amount: a, due_date: dueDateStr, status: 'unpaid', paid_date: null,
-      });
-      const s = await getSettings(db);
-      if (s.notifications_enabled) {
-        const dueDate = new Date(formYear, formMonth - 1, day);
-        const notifId = await scheduleDueNotification(
-          'Rent Due',
-          `₹${a.toLocaleString('en-IN')} rent due for ${MONTHS[formMonth - 1]} ${formYear}`,
-          dueDate
-        );
-        if (notifId) await saveRentNotificationId(db, id, notifId);
-      }
+      await addRentPayment(db, { month: formMonth, year: formYear, amount: a, status: 'unpaid', paid_date: null });
     }
-
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     setEditingRent(null);
     setShowModal(false);
     load();
@@ -122,139 +108,171 @@ export default function RentScreen() {
   async function toggleStatus(rent: Rent) {
     const newStatus = rent.status === 'paid' ? 'unpaid' : 'paid';
     await updateRentStatus(db, rent.id, newStatus);
-    if (newStatus === 'paid' && rent.notification_id) {
-      await cancelScheduledNotification(rent.notification_id);
-      await saveRentNotificationId(db, rent.id, null);
-    }
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     load();
+
+    if (newStatus === 'paid') {
+      const nextMonth = rent.month === 12 ? 1 : rent.month + 1;
+      const nextYear = rent.month === 12 ? rent.year + 1 : rent.year;
+      const alreadyExists = rents.some(r => r.month === nextMonth && r.year === nextYear);
+      if (!alreadyExists) {
+        Alert.alert(
+          'Add Next Month?',
+          `Add rent for ${MONTHS[nextMonth - 1]} ${nextYear}?`,
+          [
+            { text: 'Not Now', style: 'cancel' },
+            {
+              text: 'Add',
+              onPress: async () => {
+                await addRentPayment(db, {
+                  month: nextMonth,
+                  year: nextYear,
+                  amount: rent.amount,
+                  status: 'unpaid',
+                  paid_date: null,
+                });
+                load();
+              },
+            },
+          ],
+        );
+      }
+    }
   }
 
-  function confirmDelete(rent: Rent) {
-    Alert.alert(
-      'Delete Rent',
-      `Delete rent record for ${MONTHS_SHORT[rent.month - 1]} ${rent.year}?`,
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Delete', style: 'destructive',
-          onPress: async () => {
-            if (rent.notification_id) await cancelScheduledNotification(rent.notification_id);
-            await deleteRentPayment(db, rent.id);
-            load();
-          },
+  async function handleDelete(rent: Rent) {
+    Alert.alert('Delete Rent', `Delete rent record for ${MONTHS_SHORT[rent.month - 1]} ${rent.year}?`, [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Delete', style: 'destructive', onPress: async () => {
+          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+          await deleteRentPayment(db, rent.id);
+          load();
         },
-      ]
-    );
+      },
+    ]);
+  }
+
+  function showCardOptions(rent: Rent) {
+    Alert.alert(`${MONTHS_SHORT[rent.month - 1]} ${rent.year}`, 'Choose an action', [
+      { text: 'Edit', onPress: () => openEditModal(rent) },
+      { text: rent.status === 'paid' ? 'Mark as Unpaid' : 'Mark as Paid', onPress: () => toggleStatus(rent) },
+      { text: 'Delete', style: 'destructive', onPress: () => handleDelete(rent) },
+      { text: 'Cancel', style: 'cancel' },
+    ]);
   }
 
   const totalUnpaid = rents.filter(r => r.status === 'unpaid').reduce((s, r) => s + r.amount, 0);
 
   return (
-    <View style={styles.container}>
-      <View style={[styles.headerBar, { paddingTop: top + 16 }]}>
-        <Text style={styles.screenTitle}>Rent Payments</Text>
-        <TouchableOpacity style={styles.addBtn} onPress={openModal}>
+    <View style={[styles.container, { backgroundColor: t.bg }]}>
+      <View style={[styles.headerBar, { paddingTop: top + 16, backgroundColor: t.bg }]}>
+        <View style={styles.headerLeft}>
+          <Text style={[styles.screenTitle, { color: t.text }]}>Rent Payments</Text>
+          {overdueCount > 0 && (
+            <View style={[styles.overdueBadge, { backgroundColor: t.dangerLight }]}>
+              <Text style={[styles.overdueBadgeText, { color: t.danger }]}>{overdueCount} overdue</Text>
+            </View>
+          )}
+        </View>
+        <TouchableOpacity style={[styles.addBtn, { backgroundColor: t.primary }]} onPress={openModal}>
           <Text style={styles.addBtnText}>+ Add</Text>
         </TouchableOpacity>
       </View>
 
       {totalUnpaid > 0 && (
-        <View style={styles.summaryBanner}>
-          <Text style={styles.summaryText}>Pending rent</Text>
-          <Text style={styles.summaryAmount}>₹{totalUnpaid.toLocaleString('en-IN')}</Text>
+        <View style={[styles.summaryBanner, { backgroundColor: t.dangerLight }]}>
+          <Text style={[styles.summaryText, { color: t.danger }]}>Pending rent</Text>
+          <Text style={[styles.summaryAmount, { color: t.danger }]}>₹{totalUnpaid.toLocaleString('en-IN')}</Text>
         </View>
       )}
 
-      <ScrollView contentContainerStyle={styles.list}>
-        {rents.length === 0 && (
-          <View style={styles.emptyState}>
-            <Text style={styles.emptyTitle}>No rent records yet</Text>
-            <Text style={styles.emptyText}>Tap "+ Add" to record your first rent payment.</Text>
-          </View>
-        )}
-        {rents.map(rent => (
+      <View style={styles.searchRow}>
+        <TextInput
+          style={[styles.searchInput, { backgroundColor: t.card, borderColor: t.border, color: t.text }]}
+          value={search}
+          onChangeText={setSearch}
+          placeholder="Search by month, year or amount..."
+          placeholderTextColor={t.textPlaceholder}
+          clearButtonMode="while-editing"
+        />
+      </View>
+      <View style={styles.filterRow}>
+        {(['all', 'unpaid', 'paid'] as const).map(f => (
           <TouchableOpacity
-            key={rent.id}
-            style={styles.card}
-            onPress={() => showCardOptions(rent)}
-            activeOpacity={0.7}
+            key={f}
+            style={[styles.filterBtn, { backgroundColor: t.border }, filterStatus === f && { backgroundColor: t.primary }]}
+            onPress={() => setFilterStatus(f)}
           >
-            <View style={styles.cardTop}>
-              <View>
-                <Text style={styles.cardTitle}>{MONTHS[rent.month - 1]} {rent.year}</Text>
-                <Text style={styles.cardSub}>Due {formatDate(rent.due_date)}</Text>
-              </View>
-              <View style={[styles.badge, rent.status === 'paid' ? styles.badgePaid : styles.badgeUnpaid]}>
-                <Text style={[styles.badgeText, rent.status === 'paid' ? styles.textPaid : styles.textUnpaid]}>
-                  {rent.status === 'paid' ? 'PAID' : 'UNPAID'}
-                </Text>
-              </View>
-            </View>
-
-            <View style={styles.amountRow}>
-              <Text style={styles.amountLabel}>Rent Amount</Text>
-              <Text style={styles.amountValue}>₹{rent.amount.toLocaleString('en-IN')}</Text>
-            </View>
-
-            {rent.paid_date && (
-              <Text style={styles.paidDate}>
-                Paid on {new Date(rent.paid_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}
-              </Text>
-            )}
-
-            <Text style={styles.tapHint}>Tap for options</Text>
+            <Text style={[styles.filterBtnText, { color: t.textSub }, filterStatus === f && styles.filterBtnTextActive]}>
+              {f.charAt(0).toUpperCase() + f.slice(1)}
+            </Text>
           </TouchableOpacity>
         ))}
+      </View>
+
+      <ScrollView
+        contentContainerStyle={styles.list}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={t.primary} />}
+      >
+        {rents.length === 0 ? (
+          <View style={styles.emptyState}>
+            <Text style={styles.emptyIcon}>🏠</Text>
+            <Text style={[styles.emptyTitle, { color: t.text }]}>No rent records yet</Text>
+            <Text style={[styles.emptyText, { color: t.textMuted }]}>Tap "+ Add" above to record your first rent payment and track monthly status.</Text>
+          </View>
+        ) : filteredRents.length === 0 ? (
+          <View style={styles.emptyState}>
+            <Text style={styles.emptyIcon}>🔍</Text>
+            <Text style={[styles.emptyTitle, { color: t.text }]}>No results</Text>
+            <Text style={[styles.emptyText, { color: t.textMuted }]}>Try a different search term or filter.</Text>
+          </View>
+        ) : (
+          filteredRents.map(rent => (
+            <RentCard
+              key={rent.id}
+              rent={rent}
+              theme={t}
+              onPress={() => showCardOptions(rent)}
+              onPay={() => toggleStatus(rent)}
+              onDelete={() => handleDelete(rent)}
+            />
+          ))
+        )}
       </ScrollView>
 
       <Modal visible={showModal} animationType="slide" transparent onRequestClose={() => setShowModal(false)}>
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.modalOverlay}>
-          <View style={styles.modalSheet}>
+          <View style={[styles.modalSheet, { backgroundColor: t.card }]}>
             <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>{editingRent ? 'Edit Rent Payment' : 'Add Rent Payment'}</Text>
+              <Text style={[styles.modalTitle, { color: t.text }]}>{editingRent ? 'Edit Rent Payment' : 'Add Rent Payment'}</Text>
               <TouchableOpacity onPress={() => setShowModal(false)}>
-                <Text style={styles.modalClose}>✕</Text>
+                <Text style={[styles.modalClose, { color: t.textMuted }]}>✕</Text>
               </TouchableOpacity>
             </View>
 
-            <Text style={styles.fieldLabel}>Month & Year</Text>
+            <Text style={[styles.fieldLabel, { color: t.textSub }]}>Month & Year</Text>
             <View style={styles.monthRow}>
               <TouchableOpacity style={styles.arrowBtn} onPress={() => {
-                if (formMonth === 1) { setFormMonth(12); setFormYear(y => y - 1); }
-                else setFormMonth(m => m - 1);
-              }}>
-                <Text style={styles.arrowText}>‹</Text>
-              </TouchableOpacity>
-              <Text style={styles.monthText}>{MONTHS[formMonth - 1]} {formYear}</Text>
+                if (formMonth === 1) { setFormMonth(12); setFormYear(y => y - 1); } else setFormMonth(m => m - 1);
+              }}><Text style={[styles.arrowText, { color: t.primary }]}>‹</Text></TouchableOpacity>
+              <Text style={[styles.monthText, { color: t.text }]}>{MONTHS[formMonth - 1]} {formYear}</Text>
               <TouchableOpacity style={styles.arrowBtn} onPress={() => {
-                if (formMonth === 12) { setFormMonth(1); setFormYear(y => y + 1); }
-                else setFormMonth(m => m + 1);
-              }}>
-                <Text style={styles.arrowText}>›</Text>
-              </TouchableOpacity>
+                if (formMonth === 12) { setFormMonth(1); setFormYear(y => y + 1); } else setFormMonth(m => m + 1);
+              }}><Text style={[styles.arrowText, { color: t.primary }]}>›</Text></TouchableOpacity>
             </View>
 
-            <Text style={styles.fieldLabel}>Rent Amount (₹)</Text>
+            <Text style={[styles.fieldLabel, { color: t.textSub }]}>Rent Amount (₹)</Text>
             <TextInput
-              style={styles.input}
+              style={[styles.input, { borderColor: t.border, color: t.text, backgroundColor: t.inputBg }]}
               value={amount}
               onChangeText={setAmount}
               keyboardType="decimal-pad"
               placeholder="e.g. 15000"
-              placeholderTextColor="#D1D5DB"
+              placeholderTextColor={t.textPlaceholder}
             />
 
-            <Text style={styles.fieldLabel}>Due Day (of month)</Text>
-            <TextInput
-              style={styles.input}
-              value={dueDay}
-              onChangeText={setDueDay}
-              keyboardType="number-pad"
-              placeholder="e.g. 1"
-              placeholderTextColor="#D1D5DB"
-            />
-
-            <TouchableOpacity style={styles.saveBtn} onPress={saveRent}>
+            <TouchableOpacity style={[styles.saveBtn, { backgroundColor: t.primary }]} onPress={saveRent}>
               <Text style={styles.saveBtnText}>{editingRent ? 'Update Rent' : 'Save Rent'}</Text>
             </TouchableOpacity>
           </View>
@@ -264,71 +282,134 @@ export default function RentScreen() {
   );
 }
 
-function formatDate(dateStr: string): string {
-  const parts = dateStr.split('-');
-  const MONTHS_S = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-  return `${parseInt(parts[2])} ${MONTHS_S[parseInt(parts[1]) - 1]} ${parts[0]}`;
+function RentCard({ rent, theme: t, onPress, onPay, onDelete }: {
+  rent: Rent; theme: Theme; onPress: () => void; onPay: () => void; onDelete: () => void;
+}) {
+  const swipeRef = useRef<Swipeable>(null);
+  const overdue = isOverdue(rent);
+
+  function renderRightActions(progress: Animated.AnimatedInterpolation<number>) {
+    const trans = progress.interpolate({ inputRange: [0, 1], outputRange: [120, 0] });
+    return (
+      <Animated.View style={[styles.swipeActions, { transform: [{ translateX: trans }] }]}>
+        {rent.status === 'unpaid' && (
+          <TouchableOpacity style={styles.swipePayBtn} onPress={() => { swipeRef.current?.close(); onPay(); }}>
+            <Text style={styles.swipePayText}>✓ Pay</Text>
+          </TouchableOpacity>
+        )}
+        <TouchableOpacity style={styles.swipeDeleteBtn} onPress={() => { swipeRef.current?.close(); onDelete(); }}>
+          <Text style={styles.swipeDeleteText}>Delete</Text>
+        </TouchableOpacity>
+      </Animated.View>
+    );
+  }
+
+  return (
+    <Swipeable ref={swipeRef} renderRightActions={renderRightActions} overshootRight={false}>
+      <TouchableOpacity
+        style={[styles.card, { backgroundColor: t.card }, overdue && { borderWidth: 1.5, borderColor: t.danger }]}
+        onPress={onPress}
+        activeOpacity={0.7}
+      >
+        {overdue && <View style={[styles.overdueStripe, { backgroundColor: t.danger }]} />}
+        <View style={styles.cardTop}>
+          <View>
+            <Text style={[styles.cardTitle, { color: t.text }]}>{MONTHS[rent.month - 1]} {rent.year}</Text>
+            {overdue && <Text style={[styles.overdueLabel, { color: t.danger }]}>OVERDUE</Text>}
+          </View>
+          <View style={[styles.badge, rent.status === 'paid' ? { backgroundColor: t.successLight } : { backgroundColor: t.dangerLight }]}>
+            <Text style={[styles.badgeText, { color: rent.status === 'paid' ? t.success : t.danger }]}>
+              {rent.status === 'paid' ? 'PAID' : 'UNPAID'}
+            </Text>
+          </View>
+        </View>
+
+        <View style={[styles.amountRow, { backgroundColor: t.cardAlt }]}>
+          <Text style={[styles.amountLabel, { color: t.textSub }]}>Rent Amount</Text>
+          <Text style={[styles.amountValue, { color: t.primary }]}>₹{rent.amount.toLocaleString('en-IN')}</Text>
+        </View>
+
+        {rent.paid_date && (
+          <Text style={[styles.paidDate, { color: t.success }]}>
+            Paid on {new Date(rent.paid_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}
+          </Text>
+        )}
+
+        {rent.status === 'unpaid' && (
+          <TouchableOpacity style={[styles.quickPayBtn, { backgroundColor: t.successBg, borderColor: t.success }]} onPress={onPay}>
+            <Text style={[styles.quickPayText, { color: t.success }]}>Mark as Paid</Text>
+          </TouchableOpacity>
+        )}
+      </TouchableOpacity>
+    </Swipeable>
+  );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#F3F4F6' },
+  container: { flex: 1 },
   headerBar: {
     flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
-    paddingHorizontal: 20, paddingTop: 16, paddingBottom: 12, backgroundColor: '#F3F4F6',
+    paddingHorizontal: 20, paddingBottom: 10,
   },
-  screenTitle: { fontSize: 22, fontWeight: '700', color: '#111827' },
-  addBtn: { backgroundColor: '#6366F1', borderRadius: 10, paddingHorizontal: 16, paddingVertical: 8 },
+  headerLeft: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  screenTitle: { fontSize: 22, fontWeight: '700' },
+  overdueBadge: { borderRadius: 8, paddingHorizontal: 8, paddingVertical: 3 },
+  overdueBadgeText: { fontSize: 11, fontWeight: '700' },
+  addBtn: { borderRadius: 10, paddingHorizontal: 16, paddingVertical: 8 },
   addBtnText: { color: '#FFFFFF', fontWeight: '700', fontSize: 15 },
   summaryBanner: {
     flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
-    backgroundColor: '#FEE2E2', marginHorizontal: 16, borderRadius: 12,
-    paddingHorizontal: 16, paddingVertical: 10, marginBottom: 4,
+    marginHorizontal: 16, borderRadius: 12, paddingHorizontal: 16, paddingVertical: 10, marginBottom: 4,
   },
-  summaryText: { fontSize: 14, color: '#991B1B', fontWeight: '600' },
-  summaryAmount: { fontSize: 16, color: '#991B1B', fontWeight: '700' },
+  summaryText: { fontSize: 14, fontWeight: '600' },
+  summaryAmount: { fontSize: 16, fontWeight: '700' },
+  searchRow: { paddingHorizontal: 16, paddingBottom: 8 },
+  searchInput: {
+    borderRadius: 12, paddingHorizontal: 14, paddingVertical: 10,
+    fontSize: 14, borderWidth: 1.5,
+  },
+  filterRow: { flexDirection: 'row', paddingHorizontal: 16, gap: 8, marginBottom: 8 },
+  filterBtn: { flex: 1, paddingVertical: 6, borderRadius: 8, alignItems: 'center' },
+  filterBtnText: { fontSize: 13, fontWeight: '600' },
+  filterBtnTextActive: { color: '#FFFFFF' },
   list: { padding: 16, paddingBottom: 40 },
   card: {
-    backgroundColor: '#FFFFFF', borderRadius: 16, padding: 16, marginBottom: 12,
+    borderRadius: 16, padding: 16, marginBottom: 12,
     shadowColor: '#000', shadowOpacity: 0.06, shadowRadius: 8,
-    shadowOffset: { width: 0, height: 2 }, elevation: 2,
+    shadowOffset: { width: 0, height: 2 }, elevation: 2, overflow: 'hidden',
   },
+  overdueStripe: { position: 'absolute', left: 0, top: 0, bottom: 0, width: 4 },
+  overdueLabel: { fontSize: 10, fontWeight: '800', letterSpacing: 0.5, marginTop: 2 },
   cardTop: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 12 },
-  cardTitle: { fontSize: 17, fontWeight: '700', color: '#111827' },
-  cardSub: { fontSize: 13, color: '#9CA3AF', marginTop: 2 },
+  cardTitle: { fontSize: 17, fontWeight: '700' },
   badge: { borderRadius: 8, paddingHorizontal: 10, paddingVertical: 4 },
-  badgePaid: { backgroundColor: '#DCFCE7' },
-  badgeUnpaid: { backgroundColor: '#FEE2E2' },
   badgeText: { fontSize: 12, fontWeight: '700', letterSpacing: 0.5 },
-  textPaid: { color: '#16A34A' },
-  textUnpaid: { color: '#DC2626' },
-  amountRow: {
-    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
-    backgroundColor: '#F9FAFB', borderRadius: 10, padding: 12,
-  },
-  amountLabel: { fontSize: 13, color: '#6B7280', fontWeight: '600' },
-  amountValue: { fontSize: 20, fontWeight: '700', color: '#6366F1' },
-  paidDate: { fontSize: 12, color: '#16A34A', marginTop: 8, fontStyle: 'italic' },
-  tapHint: { fontSize: 11, color: '#D1D5DB', marginTop: 10, textAlign: 'center' },
-  emptyState: { alignItems: 'center', paddingVertical: 80 },
-  emptyTitle: { fontSize: 18, fontWeight: '600', color: '#9CA3AF', marginBottom: 8 },
-  emptyText: { fontSize: 14, color: '#D1D5DB', textAlign: 'center' },
+  amountRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', borderRadius: 10, padding: 12 },
+  amountLabel: { fontSize: 13, fontWeight: '600' },
+  amountValue: { fontSize: 20, fontWeight: '700' },
+  paidDate: { fontSize: 12, marginTop: 8, fontStyle: 'italic' },
+  quickPayBtn: { marginTop: 10, borderRadius: 10, paddingVertical: 8, alignItems: 'center', borderWidth: 1 },
+  quickPayText: { fontSize: 13, fontWeight: '700' },
+  swipeActions: { flexDirection: 'row', marginBottom: 12, borderRadius: 16, overflow: 'hidden' },
+  swipePayBtn: { backgroundColor: '#16A34A', justifyContent: 'center', alignItems: 'center', width: 70, paddingHorizontal: 8 },
+  swipePayText: { color: '#FFFFFF', fontWeight: '700', fontSize: 13 },
+  swipeDeleteBtn: { backgroundColor: '#DC2626', justifyContent: 'center', alignItems: 'center', width: 70, paddingHorizontal: 8 },
+  swipeDeleteText: { color: '#FFFFFF', fontWeight: '700', fontSize: 13 },
+  emptyState: { alignItems: 'center', paddingVertical: 60 },
+  emptyIcon: { fontSize: 48, marginBottom: 12 },
+  emptyTitle: { fontSize: 18, fontWeight: '700', marginBottom: 8 },
+  emptyText: { fontSize: 14, textAlign: 'center', lineHeight: 20, paddingHorizontal: 24 },
   modalOverlay: { flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(0,0,0,0.4)' },
-  modalSheet: {
-    backgroundColor: '#FFFFFF', borderTopLeftRadius: 24, borderTopRightRadius: 24,
-    padding: 24, paddingBottom: 40,
-  },
+  modalSheet: { borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: 24, paddingBottom: 40 },
   modalHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 },
-  modalTitle: { fontSize: 20, fontWeight: '700', color: '#111827' },
-  modalClose: { fontSize: 20, color: '#9CA3AF', padding: 4 },
-  fieldLabel: { fontSize: 13, fontWeight: '600', color: '#374151', marginBottom: 6, marginTop: 14 },
+  modalTitle: { fontSize: 20, fontWeight: '700' },
+  modalClose: { fontSize: 20, padding: 4 },
+  fieldLabel: { fontSize: 13, fontWeight: '600', marginBottom: 6, marginTop: 14 },
   monthRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 20 },
   arrowBtn: { padding: 8 },
-  arrowText: { fontSize: 28, color: '#6366F1', fontWeight: '300' },
-  monthText: { fontSize: 18, fontWeight: '700', color: '#111827', minWidth: 160, textAlign: 'center' },
-  input: {
-    borderWidth: 1.5, borderColor: '#E5E7EB', borderRadius: 12,
-    padding: 14, fontSize: 16, color: '#111827', backgroundColor: '#FAFAFA',
-  },
-  saveBtn: { backgroundColor: '#6366F1', borderRadius: 14, padding: 16, marginTop: 24, alignItems: 'center' },
+  arrowText: { fontSize: 28, fontWeight: '300' },
+  monthText: { fontSize: 18, fontWeight: '700', minWidth: 160, textAlign: 'center' },
+  input: { borderWidth: 1.5, borderRadius: 12, padding: 14, fontSize: 16 },
+  saveBtn: { borderRadius: 14, padding: 16, marginTop: 24, alignItems: 'center' },
   saveBtnText: { color: '#FFFFFF', fontSize: 16, fontWeight: '700' },
 });

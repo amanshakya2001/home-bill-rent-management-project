@@ -6,19 +6,24 @@ import {
 } from 'react-native';
 import { useFocusEffect } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import * as Clipboard from 'expo-clipboard';
 
-import { getSettings, updateSettings, type AppSettings } from '@/lib/database';
+import { getSettings, updateSettings, getBills, getRentPayments, type AppSettings } from '@/lib/database';
+import { useTheme } from '@/lib/theme';
+import { buildCSV } from '@/lib/export';
 
 export default function SettingsScreen() {
   const { top } = useSafeAreaInsets();
   const db = useSQLiteContext();
+  const t = useTheme();
   const [settings, setSettings] = useState<AppSettings>({
     apartment_name: 'My Apartment',
-    bill_due_day: 10,
-    rent_due_day: 1,
     notifications_enabled: 1,
   });
   const [dirty, setDirty] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const now = new Date();
+  const [exportYear, setExportYear] = useState(now.getFullYear());
 
   const load = useCallback(async () => {
     const s = await getSettings(db);
@@ -33,104 +38,104 @@ export default function SettingsScreen() {
     setDirty(true);
   }
 
-  async function save() {
-    const billDay = settings.bill_due_day;
-    const rentDay = settings.rent_due_day;
+  async function handleCopyCSV() {
+    try {
+      const [bills, rents] = await Promise.all([getBills(db), getRentPayments(db)]);
+      const csv = buildCSV(bills, rents, settings, exportYear);
+      await Clipboard.setStringAsync(csv);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 3000);
+    } catch (e: any) {
+      Alert.alert('Export failed', e.message ?? 'Unknown error');
+    }
+  }
 
+  async function save() {
     if (!settings.apartment_name.trim()) {
       Alert.alert('Error', 'Apartment name cannot be empty.');
       return;
     }
-    if (billDay < 1 || billDay > 31) {
-      Alert.alert('Error', 'Bill due day must be between 1 and 31.');
-      return;
-    }
-    if (rentDay < 1 || rentDay > 31) {
-      Alert.alert('Error', 'Rent due day must be between 1 and 31.');
-      return;
-    }
-
     await updateSettings(db, settings);
     setDirty(false);
     Alert.alert('Saved', 'Settings updated successfully.');
   }
 
   return (
-    <ScrollView style={styles.container} contentContainerStyle={[styles.content, { paddingTop: top + 20 }]}>
-      <Text style={styles.screenTitle}>Settings</Text>
+    <ScrollView
+      style={[styles.container, { backgroundColor: t.bg }]}
+      contentContainerStyle={[styles.content, { paddingTop: top + 20 }]}
+    >
+      <Text style={[styles.screenTitle, { color: t.text }]}>Settings</Text>
 
       <View style={styles.section}>
-        <Text style={styles.sectionTitle}>Apartment</Text>
-        <View style={styles.card}>
-          <Text style={styles.fieldLabel}>Apartment Name</Text>
+        <Text style={[styles.sectionTitle, { color: t.textSub }]}>Apartment</Text>
+        <View style={[styles.card, { backgroundColor: t.card }]}>
+          <Text style={[styles.fieldLabel, { color: t.textSub }]}>Apartment Name</Text>
           <TextInput
-            style={styles.input}
+            style={[styles.input, { borderColor: t.border, color: t.text, backgroundColor: t.inputBg }]}
             value={settings.apartment_name}
             onChangeText={v => update({ apartment_name: v })}
             placeholder="e.g. My Apartment"
-            placeholderTextColor="#D1D5DB"
+            placeholderTextColor={t.textPlaceholder}
           />
         </View>
       </View>
 
       <View style={styles.section}>
-        <Text style={styles.sectionTitle}>Default Due Days</Text>
-        <Text style={styles.sectionSubtitle}>
-          These are pre-filled when you add a new entry. You can still change them per entry.
-        </Text>
-        <View style={styles.card}>
+        <Text style={[styles.sectionTitle, { color: t.textSub }]}>Notifications</Text>
+        <View style={[styles.card, { backgroundColor: t.card }]}>
           <View style={styles.row}>
             <View style={styles.rowLeft}>
-              <Text style={styles.rowLabel}>Electricity Bill Due Day</Text>
-              <Text style={styles.rowSub}>Day of month (1–31)</Text>
+              <Text style={[styles.rowLabel, { color: t.text }]}>Enable Notifications</Text>
+              <Text style={[styles.rowSub, { color: t.textMuted }]}>Payment reminders</Text>
             </View>
-            <TextInput
-              style={styles.dayInput}
-              value={String(settings.bill_due_day)}
-              onChangeText={v => update({ bill_due_day: parseInt(v) || 1 })}
-              keyboardType="number-pad"
-              maxLength={2}
-            />
-          </View>
-
-          <View style={styles.divider} />
-
-          <View style={styles.row}>
-            <View style={styles.rowLeft}>
-              <Text style={styles.rowLabel}>Rent Due Day</Text>
-              <Text style={styles.rowSub}>Day of month (1–31)</Text>
-            </View>
-            <TextInput
-              style={styles.dayInput}
-              value={String(settings.rent_due_day)}
-              onChangeText={v => update({ rent_due_day: parseInt(v) || 1 })}
-              keyboardType="number-pad"
-              maxLength={2}
+            <Switch
+              value={settings.notifications_enabled === 1}
+              onValueChange={v => update({ notifications_enabled: v ? 1 : 0 })}
+              trackColor={{ false: t.border, true: '#A5B4FC' }}
+              thumbColor={settings.notifications_enabled === 1 ? t.primary : t.textMuted}
             />
           </View>
         </View>
       </View>
 
       <View style={styles.section}>
-        <Text style={styles.sectionTitle}>Notifications</Text>
-        <View style={styles.card}>
+        <Text style={[styles.sectionTitle, { color: t.textSub }]}>Export Data</Text>
+        <View style={[styles.card, { backgroundColor: t.card }]}>
           <View style={styles.row}>
             <View style={styles.rowLeft}>
-              <Text style={styles.rowLabel}>Enable Notifications</Text>
-              <Text style={styles.rowSub}>Reminder 1 day before due date</Text>
+              <Text style={[styles.rowLabel, { color: t.text }]}>Copy as CSV</Text>
+              <Text style={[styles.rowSub, { color: t.textMuted }]}>Paste into Sheets or Excel</Text>
             </View>
-            <Switch
-              value={settings.notifications_enabled === 1}
-              onValueChange={v => update({ notifications_enabled: v ? 1 : 0 })}
-              trackColor={{ false: '#E5E7EB', true: '#A5B4FC' }}
-              thumbColor={settings.notifications_enabled === 1 ? '#6366F1' : '#9CA3AF'}
-            />
+            <View style={styles.yearRow}>
+              <TouchableOpacity onPress={() => setExportYear(y => y - 1)} style={styles.yearArrow}>
+                <Text style={[styles.yearArrowText, { color: t.primary }]}>‹</Text>
+              </TouchableOpacity>
+              <Text style={[styles.yearValue, { color: t.text }]}>{exportYear}</Text>
+              <TouchableOpacity
+                onPress={() => setExportYear(y => y + 1)}
+                style={styles.yearArrow}
+                disabled={exportYear >= now.getFullYear()}
+              >
+                <Text style={[styles.yearArrowText, { color: exportYear >= now.getFullYear() ? t.textPlaceholder : t.primary }]}>›</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+          <View style={[styles.exportRow, { borderTopColor: t.border }]}>
+            <TouchableOpacity
+              style={[styles.exportBtn, { backgroundColor: copied ? t.successLight : t.primaryLight }]}
+              onPress={handleCopyCSV}
+            >
+              <Text style={[styles.exportBtnText, { color: copied ? t.success : t.primary }]}>
+                {copied ? '✓ Copied to Clipboard' : 'Copy CSV'}
+              </Text>
+            </TouchableOpacity>
           </View>
         </View>
       </View>
 
       {dirty && (
-        <TouchableOpacity style={styles.saveBtn} onPress={save}>
+        <TouchableOpacity style={[styles.saveBtn, { backgroundColor: t.primary }]} onPress={save}>
           <Text style={styles.saveBtnText}>Save Changes</Text>
         </TouchableOpacity>
       )}
@@ -139,21 +144,20 @@ export default function SettingsScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#F3F4F6' },
+  container: { flex: 1 },
   content: { padding: 20, paddingBottom: 60 },
-  screenTitle: { fontSize: 26, fontWeight: '700', color: '#111827', marginBottom: 24, marginTop: 8 },
+  screenTitle: { fontSize: 26, fontWeight: '700', marginBottom: 24, marginTop: 8 },
   section: { marginBottom: 24 },
-  sectionTitle: { fontSize: 13, fontWeight: '700', color: '#6B7280', textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 6 },
-  sectionSubtitle: { fontSize: 13, color: '#9CA3AF', marginBottom: 10, lineHeight: 18 },
+  sectionTitle: { fontSize: 13, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 6 },
   card: {
-    backgroundColor: '#FFFFFF', borderRadius: 16, overflow: 'hidden',
+    borderRadius: 16, overflow: 'hidden',
     shadowColor: '#000', shadowOpacity: 0.05, shadowRadius: 8,
     shadowOffset: { width: 0, height: 2 }, elevation: 2,
   },
-  fieldLabel: { fontSize: 13, fontWeight: '600', color: '#374151', padding: 16, paddingBottom: 6 },
+  fieldLabel: { fontSize: 13, fontWeight: '600', padding: 16, paddingBottom: 6 },
   input: {
-    borderWidth: 1.5, borderColor: '#E5E7EB', borderRadius: 10,
-    padding: 12, fontSize: 16, color: '#111827', backgroundColor: '#FAFAFA',
+    borderWidth: 1.5, borderRadius: 10,
+    padding: 12, fontSize: 16,
     marginHorizontal: 16, marginBottom: 16,
   },
   row: {
@@ -161,17 +165,15 @@ const styles = StyleSheet.create({
     padding: 16,
   },
   rowLeft: { flex: 1, marginRight: 12 },
-  rowLabel: { fontSize: 15, fontWeight: '600', color: '#111827' },
-  rowSub: { fontSize: 12, color: '#9CA3AF', marginTop: 2 },
-  dayInput: {
-    borderWidth: 1.5, borderColor: '#E5E7EB', borderRadius: 10,
-    padding: 10, fontSize: 18, fontWeight: '700', color: '#6366F1',
-    textAlign: 'center', width: 56, backgroundColor: '#FAFAFA',
-  },
-  divider: { height: 1, backgroundColor: '#F3F4F6' },
-  saveBtn: {
-    backgroundColor: '#6366F1', borderRadius: 14, padding: 16,
-    alignItems: 'center', marginTop: 8,
-  },
+  rowLabel: { fontSize: 15, fontWeight: '600' },
+  rowSub: { fontSize: 12, marginTop: 2 },
+  saveBtn: { borderRadius: 14, padding: 16, alignItems: 'center', marginTop: 8 },
   saveBtnText: { color: '#FFFFFF', fontSize: 16, fontWeight: '700' },
+  yearRow: { flexDirection: 'row', alignItems: 'center', gap: 2 },
+  yearArrow: { padding: 6 },
+  yearArrowText: { fontSize: 22, fontWeight: '300' },
+  yearValue: { fontSize: 15, fontWeight: '700', minWidth: 40, textAlign: 'center' },
+  exportRow: { borderTopWidth: 1, padding: 12 },
+  exportBtn: { borderRadius: 10, paddingVertical: 10, alignItems: 'center' },
+  exportBtnText: { fontSize: 14, fontWeight: '700' },
 });

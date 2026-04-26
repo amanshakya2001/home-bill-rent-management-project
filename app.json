@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "home-bill-rent-management",
+    "name": "Home Manager",
     "slug": "home-bill-rent-management",
     "version": "1.0.0",
     "orientation": "portrait",
@@ -40,15 +40,7 @@
           }
         }
       ],
-      "expo-sqlite",
-      [
-        "expo-notifications",
-        {
-          "icon": "./assets/images/icon.png",
-          "color": "#6366F1",
-          "sounds": []
-        }
-      ]
+      "expo-sqlite"
     ],
     "experiments": {
       "typedRoutes": true,
