@@ -1,7 +1,7 @@
 import { useSQLiteContext } from 'expo-sqlite';
 import { useCallback, useState } from 'react';
 import {
-  Alert, ScrollView, StyleSheet, Switch, Text,
+  Alert, ScrollView, StyleSheet, Text,
   TextInput, TouchableOpacity, View,
 } from 'react-native';
 import { useFocusEffect } from 'expo-router';
@@ -18,7 +18,7 @@ export default function SettingsScreen() {
   const t = useTheme();
   const [settings, setSettings] = useState<AppSettings>({
     apartment_name: 'My Apartment',
-    notifications_enabled: 1,
+    onboarding_done: 1,
   });
   const [dirty, setDirty] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -78,24 +78,6 @@ export default function SettingsScreen() {
             placeholder="e.g. My Apartment"
             placeholderTextColor={t.textPlaceholder}
           />
-        </View>
-      </View>
-
-      <View style={styles.section}>
-        <Text style={[styles.sectionTitle, { color: t.textSub }]}>Notifications</Text>
-        <View style={[styles.card, { backgroundColor: t.card }]}>
-          <View style={styles.row}>
-            <View style={styles.rowLeft}>
-              <Text style={[styles.rowLabel, { color: t.text }]}>Enable Notifications</Text>
-              <Text style={[styles.rowSub, { color: t.textMuted }]}>Payment reminders</Text>
-            </View>
-            <Switch
-              value={settings.notifications_enabled === 1}
-              onValueChange={v => update({ notifications_enabled: v ? 1 : 0 })}
-              trackColor={{ false: t.border, true: '#A5B4FC' }}
-              thumbColor={settings.notifications_enabled === 1 ? t.primary : t.textMuted}
-            />
-          </View>
         </View>
       </View>
 

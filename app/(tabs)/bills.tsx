@@ -13,7 +13,7 @@ import { Swipeable } from 'react-native-gesture-handler';
 
 import {
   getBills, addBill, updateBill, updateBillStatus, deleteBill,
-  updateBillImage, getLastBillReading, addRentPayment, type Bill,
+  updateBillImage, getLastBillReading, type Bill,
 } from '@/lib/database';
 import { readMeterFromImage } from '@/lib/openai';
 import { useTheme } from '@/lib/theme';

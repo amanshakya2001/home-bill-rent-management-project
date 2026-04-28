@@ -14,20 +14,20 @@ export const unstable_settings = { anchor: '(tabs)' };
 
 function AppNavigator() {
   const db = useSQLiteContext();
-  const [checked, setChecked] = useState(false);
+  const [ready, setReady] = useState(false);
+  const scheme = useColorScheme();
 
   useEffect(() => {
     (async () => {
       const s = await getSettings(db);
-      // Show onboarding only if apartment name is still the default
-      if (s.apartment_name === 'My Apartment') {
+      if (!s.onboarding_done) {
         router.replace('/onboarding');
       }
-      setChecked(true);
+      setReady(true);
     })();
   }, [db]);
 
-  const scheme = useColorScheme();
+  if (!ready) return null;
 
   return (
     <ThemeProvider value={scheme === 'dark' ? DarkTheme : DefaultTheme}>

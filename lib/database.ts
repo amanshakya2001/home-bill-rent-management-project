@@ -25,7 +25,7 @@ export type Rent = {
 
 export type AppSettings = {
   apartment_name: string;
-  notifications_enabled: number;
+  onboarding_done: number;
 };
 
 export type SplitRecord = {
@@ -90,11 +90,11 @@ export async function initDatabase(db: SQLite.SQLiteDatabase): Promise<void> {
     CREATE TABLE IF NOT EXISTS app_settings (
       id INTEGER PRIMARY KEY CHECK (id = 1),
       apartment_name TEXT NOT NULL DEFAULT 'My Apartment',
-      notifications_enabled INTEGER NOT NULL DEFAULT 1
+      onboarding_done INTEGER NOT NULL DEFAULT 0
     );
 
-    INSERT OR IGNORE INTO app_settings (id, apartment_name, notifications_enabled)
-    VALUES (1, 'My Apartment', 1);
+    INSERT OR IGNORE INTO app_settings (id, apartment_name, onboarding_done)
+    VALUES (1, 'My Apartment', 0);
   `);
 
   // Migrations for existing databases
@@ -102,6 +102,7 @@ export async function initDatabase(db: SQLite.SQLiteDatabase): Promise<void> {
     `ALTER TABLE electricity_bills ADD COLUMN image_uri TEXT;`,
     `ALTER TABLE electricity_bills ADD COLUMN previous_reading REAL NOT NULL DEFAULT 0;`,
     `ALTER TABLE electricity_bills ADD COLUMN current_reading REAL NOT NULL DEFAULT 0;`,
+    `ALTER TABLE app_settings ADD COLUMN onboarding_done INTEGER NOT NULL DEFAULT 0;`,
   ];
   for (const sql of migrations) {
     try { await db.execAsync(sql); } catch { /* column already exists */ }
@@ -258,9 +259,9 @@ export async function deleteSplitRecord(db: SQLite.SQLiteDatabase, id: number): 
 // Settings
 export async function getSettings(db: SQLite.SQLiteDatabase): Promise<AppSettings> {
   const settings = await db.getFirstAsync<AppSettings>(
-    'SELECT apartment_name, notifications_enabled FROM app_settings WHERE id = 1'
+    'SELECT apartment_name, onboarding_done FROM app_settings WHERE id = 1'
   );
-  return settings ?? { apartment_name: 'My Apartment', notifications_enabled: 1 };
+  return settings ?? { apartment_name: 'My Apartment', onboarding_done: 0 };
 }
 
 export async function updateSettings(
@@ -268,7 +269,7 @@ export async function updateSettings(
   settings: AppSettings
 ): Promise<void> {
   await db.runAsync(
-    `UPDATE app_settings SET apartment_name = ?, notifications_enabled = ? WHERE id = 1`,
-    settings.apartment_name, settings.notifications_enabled
+    `UPDATE app_settings SET apartment_name = ?, onboarding_done = ? WHERE id = 1`,
+    settings.apartment_name, settings.onboarding_done
   );
 }

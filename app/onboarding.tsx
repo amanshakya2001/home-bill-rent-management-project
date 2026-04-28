@@ -42,7 +42,8 @@ export default function OnboardingScreen() {
     const settings = await getSettings(db);
     await updateSettings(db, {
       ...settings,
-      apartment_name: apartmentName.trim() || 'My Apartment',
+      apartment_name: apartmentName.trim() || 'My Home',
+      onboarding_done: 1,
     });
     router.replace('/(tabs)');
   }
@@ -102,7 +103,11 @@ export default function OnboardingScreen() {
           </TouchableOpacity>
         )}
         {step === 0 && (
-          <TouchableOpacity onPress={() => router.replace('/(tabs)')} style={styles.skipBtn}>
+          <TouchableOpacity onPress={async () => {
+            const settings = await getSettings(db);
+            await updateSettings(db, { ...settings, onboarding_done: 1 });
+            router.replace('/(tabs)');
+          }} style={styles.skipBtn}>
             <Text style={[styles.skipText, { color: t.textMuted }]}>Skip</Text>
           </TouchableOpacity>
         )}

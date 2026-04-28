@@ -20,7 +20,7 @@ export default function DashboardScreen() {
   const t = useTheme();
   const [bills, setBills] = useState<Bill[]>([]);
   const [rents, setRents] = useState<Rent[]>([]);
-  const [settings, setSettings] = useState<AppSettings>({ apartment_name: 'My Apartment', notifications_enabled: 1 });
+  const [settings, setSettings] = useState<AppSettings>({ apartment_name: 'My Apartment', onboarding_done: 1 });
   const [insights, setInsights] = useState<string | null>(null);
   const [loadingInsights, setLoadingInsights] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
