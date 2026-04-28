@@ -4,30 +4,21 @@ import { StatusBar } from 'expo-status-bar';
 import { SQLiteProvider } from 'expo-sqlite';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { useColorScheme } from 'react-native';
-import { useEffect, useState } from 'react';
+import { useEffect } from 'react';
 import 'react-native-reanimated';
 
-import { initDatabase, getSettings } from '@/lib/database';
-import { useSQLiteContext } from 'expo-sqlite';
+import { initDatabase, initialOnboardingDone } from '@/lib/database';
 
 export const unstable_settings = { anchor: '(tabs)' };
 
 function AppNavigator() {
-  const db = useSQLiteContext();
-  const [ready, setReady] = useState(false);
   const scheme = useColorScheme();
 
   useEffect(() => {
-    (async () => {
-      const s = await getSettings(db);
-      if (!s.onboarding_done) {
-        router.replace('/onboarding');
-      }
-      setReady(true);
-    })();
-  }, [db]);
-
-  if (!ready) return null;
+    if (!initialOnboardingDone) {
+      router.replace('/onboarding');
+    }
+  }, []);
 
   return (
     <ThemeProvider value={scheme === 'dark' ? DarkTheme : DefaultTheme}>

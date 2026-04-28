@@ -102,7 +102,11 @@ export default function DashboardScreen() {
       <View style={styles.header}>
         <View>
           <Text style={[styles.headerSub, { color: t.textSub }]}>Welcome back</Text>
-          <Text style={[styles.headerTitle, { color: t.text }]}>{settings.apartment_name}</Text>
+          {settings.apartment_name && settings.apartment_name !== 'My Apartment' ? (
+            <Text style={[styles.headerTitle, { color: t.text }]}>{settings.apartment_name}</Text>
+          ) : (
+            <Text style={[styles.headerTitle, { color: t.text }]}>My Home</Text>
+          )}
         </View>
         {ytdTotal > 0 && (
           <View style={[styles.ytdPill, { backgroundColor: t.primaryLight }]}>

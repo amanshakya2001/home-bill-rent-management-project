@@ -1,5 +1,8 @@
 import * as SQLite from 'expo-sqlite';
 
+// Set by initDatabase so AppNavigator can read it without a second DB call
+export let initialOnboardingDone = false;
+
 export type Bill = {
   id: number;
   month: number;
@@ -97,16 +100,22 @@ export async function initDatabase(db: SQLite.SQLiteDatabase): Promise<void> {
     VALUES (1, 'My Apartment', 0);
   `);
 
-  // Migrations for existing databases
+  // Migrations — use runSync so everything finishes before any component can read the DB
   const migrations = [
     `ALTER TABLE electricity_bills ADD COLUMN image_uri TEXT;`,
     `ALTER TABLE electricity_bills ADD COLUMN previous_reading REAL NOT NULL DEFAULT 0;`,
     `ALTER TABLE electricity_bills ADD COLUMN current_reading REAL NOT NULL DEFAULT 0;`,
     `ALTER TABLE app_settings ADD COLUMN onboarding_done INTEGER NOT NULL DEFAULT 0;`,
+    `UPDATE app_settings SET onboarding_done = 1 WHERE id = 1 AND apartment_name != 'My Apartment';`,
   ];
   for (const sql of migrations) {
-    try { await db.execAsync(sql); } catch { /* column already exists */ }
+    try { db.runSync(sql); } catch { /* column already exists or no-op */ }
   }
+
+  const row = db.getFirstSync<{ onboarding_done: number }>(
+    'SELECT onboarding_done FROM app_settings WHERE id = 1'
+  );
+  initialOnboardingDone = (row?.onboarding_done ?? 0) === 1;
 }
 
 // Bills
