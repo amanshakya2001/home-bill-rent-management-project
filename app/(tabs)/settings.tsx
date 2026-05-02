@@ -8,9 +8,10 @@ import { useFocusEffect } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Clipboard from 'expo-clipboard';
 
-import { getSettings, updateSettings, getBills, getRentPayments, type AppSettings } from '@/lib/database';
+import { getSettings, updateApartmentName, getBills, getRentPayments, type AppSettings } from '@/lib/database';
 import { useTheme } from '@/lib/theme';
 import { buildCSV } from '@/lib/export';
+import { logError } from '@/lib/logger';
 
 export default function SettingsScreen() {
   const { top } = useSafeAreaInsets();
@@ -25,13 +26,22 @@ export default function SettingsScreen() {
   const now = new Date();
   const [exportYear, setExportYear] = useState(now.getFullYear());
 
-  const load = useCallback(async () => {
-    const s = await getSettings(db);
-    setSettings(s);
-    setDirty(false);
+  const load = useCallback(async (signal?: { cancelled: boolean }) => {
+    try {
+      const s = await getSettings(db);
+      if (signal?.cancelled) return;
+      setSettings(s);
+      setDirty(false);
+    } catch (err) {
+      logError('Settings.load', 'Failed to load settings', err);
+    }
   }, [db]);
 
-  useFocusEffect(useCallback(() => { load(); }, [load]));
+  useFocusEffect(useCallback(() => {
+    const signal = { cancelled: false };
+    load(signal);
+    return () => { signal.cancelled = true; };
+  }, [load]));
 
   function update(patch: Partial<AppSettings>) {
     setSettings(prev => ({ ...prev, ...patch }));
@@ -55,9 +65,14 @@ export default function SettingsScreen() {
       Alert.alert('Error', 'Apartment name cannot be empty.');
       return;
     }
-    await updateSettings(db, settings);
-    setDirty(false);
-    Alert.alert('Saved', 'Settings updated successfully.');
+    try {
+      await updateApartmentName(db, settings.apartment_name.trim());
+      setDirty(false);
+      Alert.alert('Saved', 'Settings updated successfully.');
+    } catch (err) {
+      logError('settings.save', 'Failed to update apartment name', err);
+      Alert.alert('Error', 'Failed to save settings. Please try again.');
+    }
   }
 
   return (

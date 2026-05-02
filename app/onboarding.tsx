@@ -5,8 +5,9 @@ import { useSQLiteContext } from 'expo-sqlite';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Haptics from 'expo-haptics';
 
-import { getSettings, updateSettings } from '@/lib/database';
+import { markOnboardingDone, updateApartmentName } from '@/lib/database';
 import { useTheme } from '@/lib/theme';
+import { logError } from '@/lib/logger';
 
 const { width } = Dimensions.get('window');
 
@@ -39,12 +40,12 @@ export default function OnboardingScreen() {
 
   async function finish() {
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    const settings = await getSettings(db);
-    await updateSettings(db, {
-      ...settings,
-      apartment_name: apartmentName.trim() || 'My Home',
-      onboarding_done: 1,
-    });
+    try {
+      await updateApartmentName(db, apartmentName.trim() || 'My Home');
+      await markOnboardingDone(db);
+    } catch (err) {
+      logError('onboarding.finish', 'Failed to save settings', err);
+    }
     router.replace('/(tabs)');
   }
 
@@ -104,8 +105,7 @@ export default function OnboardingScreen() {
         )}
         {step === 0 && (
           <TouchableOpacity onPress={async () => {
-            const settings = await getSettings(db);
-            await updateSettings(db, { ...settings, onboarding_done: 1 });
+            try { await markOnboardingDone(db); } catch (err) { logError('onboarding.skip', 'Failed to mark done', err); }
             router.replace('/(tabs)');
           }} style={styles.skipBtn}>
             <Text style={[styles.skipText, { color: t.textMuted }]}>Skip</Text>

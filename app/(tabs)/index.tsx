@@ -9,8 +9,10 @@ import {
   getBills, getRentPayments, getSettings, updateBillStatus, updateRentStatus,
   type Bill, type Rent, type AppSettings,
 } from '@/lib/database';
-import { generateDashboardInsights } from '@/lib/openai';
+import { generateDashboardInsights, hasOpenAIKey } from '@/lib/openai';
 import { useTheme } from '@/lib/theme';
+import { logError } from '@/lib/logger';
+import { safeNumber } from '@/lib/dates';
 
 const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 
@@ -25,14 +27,23 @@ export default function DashboardScreen() {
   const [loadingInsights, setLoadingInsights] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
 
-  const load = useCallback(async () => {
-    const [b, r, s] = await Promise.all([getBills(db), getRentPayments(db), getSettings(db)]);
-    setBills(b);
-    setRents(r);
-    setSettings(s);
+  const load = useCallback(async (signal?: { cancelled: boolean }) => {
+    try {
+      const [b, r, s] = await Promise.all([getBills(db), getRentPayments(db), getSettings(db)]);
+      if (signal?.cancelled) return;
+      setBills(b);
+      setRents(r);
+      setSettings(s);
+    } catch (err) {
+      logError('Dashboard.load', 'Failed to load dashboard data', err);
+    }
   }, [db]);
 
-  useFocusEffect(useCallback(() => { load(); }, [load]));
+  useFocusEffect(useCallback(() => {
+    const signal = { cancelled: false };
+    load(signal);
+    return () => { signal.cancelled = true; };
+  }, [load]));
 
   async function onRefresh() {
     setRefreshing(true);
@@ -47,8 +58,9 @@ export default function DashboardScreen() {
     try {
       const text = await generateDashboardInsights({ bills: billsData, rents: rentsData });
       setInsights(text);
-    } catch {
-      setInsights('Could not load insights. Check your OpenAI API key in settings.');
+    } catch (err) {
+      logError('Dashboard.refreshInsights', 'OpenAI call failed', err);
+      setInsights('Could not load insights right now.');
     } finally {
       setLoadingInsights(false);
     }
@@ -74,8 +86,8 @@ export default function DashboardScreen() {
   const unpaidRents = rents.filter(r => r.status === 'unpaid');
   const totalPendingCount = unpaidBills.length + unpaidRents.length;
   const totalPendingAmount =
-    unpaidBills.reduce((s, b) => s + b.total_amount, 0) +
-    unpaidRents.reduce((s, r) => s + r.amount, 0);
+    unpaidBills.reduce((s, b) => s + safeNumber(b.total_amount), 0) +
+    unpaidRents.reduce((s, r) => s + safeNumber(r.amount), 0);
 
   const currentBill = bills.find(b => b.month === currentMonth && b.year === currentYear);
   const currentRent = rents.find(r => r.month === currentMonth && r.year === currentYear);
@@ -83,12 +95,12 @@ export default function DashboardScreen() {
   const ytdBillsPaid = bills.filter(b => b.year === currentYear && b.status === 'paid');
   const ytdRentsPaid = rents.filter(r => r.year === currentYear && r.status === 'paid');
   const ytdTotal =
-    ytdBillsPaid.reduce((s, b) => s + b.total_amount, 0) +
-    ytdRentsPaid.reduce((s, r) => s + r.amount, 0);
+    ytdBillsPaid.reduce((s, b) => s + safeNumber(b.total_amount), 0) +
+    ytdRentsPaid.reduce((s, r) => s + safeNumber(r.amount), 0);
 
   const recentItems = [
-    ...bills.slice(0, 4).map(b => ({ ...b, type: 'bill' as const })),
-    ...rents.slice(0, 4).map(r => ({ ...r, type: 'rent' as const })),
+    ...bills.map(b => ({ ...b, type: 'bill' as const })),
+    ...rents.map(r => ({ ...r, type: 'rent' as const })),
   ]
     .sort((a, b) => b.year !== a.year ? b.year - a.year : b.month - a.month)
     .slice(0, 5);
@@ -192,7 +204,7 @@ export default function DashboardScreen() {
         </>
       )}
 
-      {(bills.length > 0 || rents.length > 0) && (
+      {hasOpenAIKey() && (bills.length > 0 || rents.length > 0) && (
         <View style={[styles.insightsCard, { backgroundColor: t.card, borderLeftColor: t.primary }]}>
           <View style={styles.insightsHeader}>
             <Text style={[styles.insightsTitle, { color: t.primary }]}>✦ AI Insights</Text>

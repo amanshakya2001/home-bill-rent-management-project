@@ -1,21 +1,15 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Tabs } from 'expo-router';
+import { Redirect, Tabs } from 'expo-router';
 import { useFocusEffect } from 'expo-router';
 import { useSQLiteContext } from 'expo-sqlite';
 import { useColorScheme } from 'react-native';
 import { HapticTab } from '@/components/haptic-tab';
 import { IconSymbol } from '@/components/ui/icon-symbol';
-import { getBills, getRentPayments } from '@/lib/database';
+import { getBills, getRentPayments, initialOnboardingDone } from '@/lib/database';
+import { isOverdue } from '@/lib/dates';
+import { logError } from '@/lib/logger';
 
 const PRIMARY = '#6366F1';
-
-function isOverdue(month: number, year: number, status: string) {
-  if (status === 'paid') return false;
-  const now = new Date();
-  const itemDate = new Date(year, month - 1, 1);
-  const currentStart = new Date(now.getFullYear(), now.getMonth(), 1);
-  return itemDate < currentStart;
-}
 
 export default function TabLayout() {
   const db = useSQLiteContext();
@@ -25,13 +19,21 @@ export default function TabLayout() {
   const [rentBadge, setRentBadge] = useState(0);
 
   const loadBadges = useCallback(async () => {
-    const [bills, rents] = await Promise.all([getBills(db), getRentPayments(db)]);
-    setBillBadge(bills.filter(b => isOverdue(b.month, b.year, b.status)).length);
-    setRentBadge(rents.filter(r => isOverdue(r.month, r.year, r.status)).length);
+    try {
+      const [bills, rents] = await Promise.all([getBills(db), getRentPayments(db)]);
+      setBillBadge(bills.filter(b => isOverdue(b.month, b.year, b.status)).length);
+      setRentBadge(rents.filter(r => isOverdue(r.month, r.year, r.status)).length);
+    } catch (err) {
+      logError('TabLayout.loadBadges', 'Failed to load badge counts', err);
+    }
   }, [db]);
 
   useEffect(() => { loadBadges(); }, [loadBadges]);
   useFocusEffect(useCallback(() => { loadBadges(); }, [loadBadges]));
+
+  if (!initialOnboardingDone) {
+    return <Redirect href="/onboarding" />;
+  }
 
   return (
     <Tabs

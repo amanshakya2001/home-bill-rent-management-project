@@ -13,19 +13,17 @@ import { Swipeable } from 'react-native-gesture-handler';
 
 import {
   getBills, addBill, updateBill, updateBillStatus, deleteBill,
-  updateBillImage, getLastBillReading, type Bill,
+  updateBillImage, getLastBillReading, getLastBillPricePerUnit, type Bill,
 } from '@/lib/database';
 import { readMeterFromImage } from '@/lib/openai';
 import { useTheme } from '@/lib/theme';
+import { isOverdue as isOverdueShared, safeParseFloat } from '@/lib/dates';
+import { logError } from '@/lib/logger';
 
 const MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December'];
 const MONTHS_SHORT = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 
-function isOverdue(bill: Bill) {
-  if (bill.status === 'paid') return false;
-  const now = new Date();
-  return new Date(bill.year, bill.month - 1, 1) < new Date(now.getFullYear(), now.getMonth(), 1);
-}
+const isOverdue = (b: Bill) => isOverdueShared(b.month, b.year, b.status);
 
 export default function BillsScreen() {
   const { top } = useSafeAreaInsets();
@@ -48,14 +46,24 @@ export default function BillsScreen() {
   const [pricePerUnit, setPricePerUnit] = useState('');
   const [meterImage, setMeterImage] = useState<string | null>(null);
 
-  const unitsConsumed = Math.max(0, parseFloat(currReading || '0') - parseFloat(prevReading || '0'));
-  const total = unitsConsumed * parseFloat(pricePerUnit || '0');
+  const unitsConsumed = Math.max(0, safeParseFloat(currReading) - safeParseFloat(prevReading));
+  const total = unitsConsumed * safeParseFloat(pricePerUnit);
 
-  const load = useCallback(async () => {
-    setBills(await getBills(db));
+  const load = useCallback(async (signal?: { cancelled: boolean }) => {
+    try {
+      const data = await getBills(db);
+      if (signal?.cancelled) return;
+      setBills(data);
+    } catch (err) {
+      logError('Bills.load', 'Failed to load bills', err);
+    }
   }, [db]);
 
-  useFocusEffect(useCallback(() => { load(); }, [load]));
+  useFocusEffect(useCallback(() => {
+    const signal = { cancelled: false };
+    load(signal);
+    return () => { signal.cancelled = true; };
+  }, [load]));
 
   async function onRefresh() {
     setRefreshing(true);
@@ -86,9 +94,19 @@ export default function BillsScreen() {
     const n = new Date();
     setFormMonth(n.getMonth() + 1);
     setFormYear(n.getFullYear());
-    setCurrReading(''); setPricePerUnit(''); setMeterImage(null); setScanning(false);
-    const lastReading = await getLastBillReading(db);
-    setPrevReading(lastReading !== null ? String(lastReading) : '');
+    setCurrReading(''); setMeterImage(null); setScanning(false);
+    try {
+      const [lastReading, lastPrice] = await Promise.all([
+        getLastBillReading(db),
+        getLastBillPricePerUnit(db),
+      ]);
+      setPrevReading(lastReading !== null ? String(lastReading) : '');
+      setPricePerUnit(lastPrice !== null ? String(lastPrice) : '');
+    } catch (err) {
+      logError('Bills.openModal', 'Failed to prefill from last bill', err);
+      setPrevReading('');
+      setPricePerUnit('');
+    }
     setShowModal(true);
   }
 
@@ -137,39 +155,30 @@ export default function BillsScreen() {
     if (curr < prev) { Alert.alert('Error', 'Current reading cannot be less than previous reading.'); return; }
     if (!p || isNaN(p) || p <= 0) { Alert.alert('Error', 'Please enter a valid price per unit.'); return; }
     const consumed = curr - prev;
-    if (editingBill) {
-      await updateBill(db, editingBill.id, { month: formMonth, year: formYear, previous_reading: prev, current_reading: curr, units_consumed: consumed, price_per_unit: p, total_amount: consumed * p });
-      if (meterImage !== editingBill.image_uri) await updateBillImage(db, editingBill.id, meterImage);
-    } else {
-      await addBill(db, { month: formMonth, year: formYear, previous_reading: prev, current_reading: curr, units_consumed: consumed, price_per_unit: p, total_amount: consumed * p, status: 'unpaid', paid_date: null, image_uri: meterImage });
+    try {
+      if (editingBill) {
+        await updateBill(db, editingBill.id, { month: formMonth, year: formYear, previous_reading: prev, current_reading: curr, units_consumed: consumed, price_per_unit: p, total_amount: consumed * p });
+        if (meterImage !== editingBill.image_uri) await updateBillImage(db, editingBill.id, meterImage);
+      } else {
+        await addBill(db, { month: formMonth, year: formYear, previous_reading: prev, current_reading: curr, units_consumed: consumed, price_per_unit: p, total_amount: consumed * p, status: 'unpaid', paid_date: null, image_uri: meterImage });
+      }
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      setEditingBill(null); setShowModal(false); load();
+    } catch (err) {
+      logError('Bills.saveBill', 'Failed to save bill', err);
+      Alert.alert('Error', 'Could not save bill. Please try again.');
     }
-    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    setEditingBill(null); setShowModal(false); load();
   }
 
   async function toggleStatus(bill: Bill) {
     const newStatus = bill.status === 'paid' ? 'unpaid' : 'paid';
-    await updateBillStatus(db, bill.id, newStatus);
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    load();
-    // Recurring auto-entry: prompt to add next month
-    if (newStatus === 'paid') {
-      const nextMonth = bill.month === 12 ? 1 : bill.month + 1;
-      const nextYear = bill.month === 12 ? bill.year + 1 : bill.year;
-      const alreadyExists = bills.some(b => b.month === nextMonth && b.year === nextYear);
-      if (!alreadyExists) {
-        Alert.alert(
-          'Add Next Month?',
-          `Add electricity bill for ${MONTHS[nextMonth - 1]} ${nextYear}?`,
-          [
-            { text: 'Not Now', style: 'cancel' },
-            { text: 'Add', onPress: async () => {
-              await addBill(db, { month: nextMonth, year: nextYear, previous_reading: bill.current_reading, current_reading: 0, units_consumed: 0, price_per_unit: bill.price_per_unit, total_amount: 0, status: 'unpaid', paid_date: null, image_uri: null });
-              load();
-            }},
-          ]
-        );
-      }
+    try {
+      await updateBillStatus(db, bill.id, newStatus);
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+      load();
+    } catch (err) {
+      logError('Bills.toggleStatus', 'Failed to update bill status', err);
+      Alert.alert('Error', 'Could not update payment status. Please try again.');
     }
   }
 

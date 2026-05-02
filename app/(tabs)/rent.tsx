@@ -11,20 +11,16 @@ import * as Haptics from 'expo-haptics';
 
 import {
   getRentPayments, addRentPayment, updateRentPayment, updateRentStatus,
-  deleteRentPayment, type Rent,
+  deleteRentPayment, getLastRentAmount, type Rent,
 } from '@/lib/database';
 import { useTheme, type Theme } from '@/lib/theme';
+import { isOverdue as isOverdueShared } from '@/lib/dates';
+import { logError } from '@/lib/logger';
 
 const MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December'];
 const MONTHS_SHORT = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 
-function isOverdue(rent: Rent): boolean {
-  if (rent.status === 'paid') return false;
-  const now = new Date();
-  const rentDate = new Date(rent.year, rent.month - 1, 1);
-  const currentMonthStart = new Date(now.getFullYear(), now.getMonth(), 1);
-  return rentDate < currentMonthStart;
-}
+const isOverdue = (r: Rent) => isOverdueShared(r.month, r.year, r.status);
 
 export default function RentScreen() {
   const { top } = useSafeAreaInsets();
@@ -42,11 +38,21 @@ export default function RentScreen() {
   const [formYear, setFormYear] = useState(now.getFullYear());
   const [amount, setAmount] = useState('');
 
-  const load = useCallback(async () => {
-    setRents(await getRentPayments(db));
+  const load = useCallback(async (signal?: { cancelled: boolean }) => {
+    try {
+      const data = await getRentPayments(db);
+      if (signal?.cancelled) return;
+      setRents(data);
+    } catch (err) {
+      logError('Rent.load', 'Failed to load rent payments', err);
+    }
   }, [db]);
 
-  useFocusEffect(useCallback(() => { load(); }, [load]));
+  useFocusEffect(useCallback(() => {
+    const signal = { cancelled: false };
+    load(signal);
+    return () => { signal.cancelled = true; };
+  }, [load]));
 
   async function onRefresh() {
     setRefreshing(true);
@@ -74,12 +80,18 @@ export default function RentScreen() {
 
   const overdueCount = rents.filter(isOverdue).length;
 
-  function openModal() {
+  async function openModal() {
     setEditingRent(null);
     const n = new Date();
     setFormMonth(n.getMonth() + 1);
     setFormYear(n.getFullYear());
-    setAmount('');
+    try {
+      const last = await getLastRentAmount(db);
+      setAmount(last !== null ? String(last) : '');
+    } catch (err) {
+      logError('Rent.openModal', 'Failed to prefill rent amount', err);
+      setAmount('');
+    }
     setShowModal(true);
   }
 
@@ -94,49 +106,31 @@ export default function RentScreen() {
   async function saveRent() {
     const a = parseFloat(amount);
     if (!a || isNaN(a) || a <= 0) { Alert.alert('Error', 'Please enter a valid rent amount.'); return; }
-    if (editingRent) {
-      await updateRentPayment(db, editingRent.id, { month: formMonth, year: formYear, amount: a });
-    } else {
-      await addRentPayment(db, { month: formMonth, year: formYear, amount: a, status: 'unpaid', paid_date: null });
+    try {
+      if (editingRent) {
+        await updateRentPayment(db, editingRent.id, { month: formMonth, year: formYear, amount: a });
+      } else {
+        await addRentPayment(db, { month: formMonth, year: formYear, amount: a, status: 'unpaid', paid_date: null });
+      }
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      setEditingRent(null);
+      setShowModal(false);
+      load();
+    } catch (err) {
+      logError('Rent.saveRent', 'Failed to save rent payment', err);
+      Alert.alert('Error', 'Could not save rent payment. Please try again.');
     }
-    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    setEditingRent(null);
-    setShowModal(false);
-    load();
   }
 
   async function toggleStatus(rent: Rent) {
     const newStatus = rent.status === 'paid' ? 'unpaid' : 'paid';
-    await updateRentStatus(db, rent.id, newStatus);
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    load();
-
-    if (newStatus === 'paid') {
-      const nextMonth = rent.month === 12 ? 1 : rent.month + 1;
-      const nextYear = rent.month === 12 ? rent.year + 1 : rent.year;
-      const alreadyExists = rents.some(r => r.month === nextMonth && r.year === nextYear);
-      if (!alreadyExists) {
-        Alert.alert(
-          'Add Next Month?',
-          `Add rent for ${MONTHS[nextMonth - 1]} ${nextYear}?`,
-          [
-            { text: 'Not Now', style: 'cancel' },
-            {
-              text: 'Add',
-              onPress: async () => {
-                await addRentPayment(db, {
-                  month: nextMonth,
-                  year: nextYear,
-                  amount: rent.amount,
-                  status: 'unpaid',
-                  paid_date: null,
-                });
-                load();
-              },
-            },
-          ],
-        );
-      }
+    try {
+      await updateRentStatus(db, rent.id, newStatus);
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+      load();
+    } catch (err) {
+      logError('Rent.toggleStatus', 'Failed to update rent status', err);
+      Alert.alert('Error', 'Could not update payment status. Please try again.');
     }
   }
 

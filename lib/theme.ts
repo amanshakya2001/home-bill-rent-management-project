@@ -24,6 +24,16 @@ export const light = {
   tabBar: '#FFFFFF',
   tabBorder: '#E5E7EB',
   shadow: '#000',
+  // Chart palette
+  chartBillPaid: '#6366F1',
+  chartBillUnpaid: '#FCA5A5',
+  chartUnits: '#10B981',
+  chartRentPaid: '#0EA5E9',
+  chartRentUnpaid: '#FCA5A5',
+  chartAccentAmber: '#F59E0B',
+  chartAccentBlue: '#0EA5E9',
+  chartAccentGreen: '#16A34A',
+  chartAccentRed: '#DC2626',
 };
 
 export const dark = {
@@ -50,6 +60,16 @@ export const dark = {
   tabBar: '#1E293B',
   tabBorder: '#334155',
   shadow: '#000',
+  // Chart palette (lighter variants for dark mode contrast)
+  chartBillPaid: '#A5B4FC',
+  chartBillUnpaid: '#FCA5A5',
+  chartUnits: '#4ADE80',
+  chartRentPaid: '#7DD3FC',
+  chartRentUnpaid: '#FCA5A5',
+  chartAccentAmber: '#FCD34D',
+  chartAccentBlue: '#7DD3FC',
+  chartAccentGreen: '#4ADE80',
+  chartAccentRed: '#F87171',
 };
 
 export type Theme = typeof light;

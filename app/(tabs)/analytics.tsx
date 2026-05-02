@@ -6,6 +6,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { getBills, getRentPayments, type Bill, type Rent } from '@/lib/database';
 import { useTheme } from '@/lib/theme';
+import { logError } from '@/lib/logger';
 
 const MONTHS_SHORT = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 const CHART_HEIGHT = 160;
@@ -75,13 +76,22 @@ export default function AnalyticsScreen() {
   const now = new Date();
   const [selectedYear, setSelectedYear] = useState(now.getFullYear());
 
-  const load = useCallback(async () => {
-    const [b, r] = await Promise.all([getBills(db), getRentPayments(db)]);
-    setBills(b);
-    setRents(r);
+  const load = useCallback(async (signal?: { cancelled: boolean }) => {
+    try {
+      const [b, r] = await Promise.all([getBills(db), getRentPayments(db)]);
+      if (signal?.cancelled) return;
+      setBills(b);
+      setRents(r);
+    } catch (err) {
+      logError('Analytics.load', 'Failed to load analytics data', err);
+    }
   }, [db]);
 
-  useFocusEffect(useCallback(() => { load(); }, [load]));
+  useFocusEffect(useCallback(() => {
+    const signal = { cancelled: false };
+    load(signal);
+    return () => { signal.cancelled = true; };
+  }, [load]));
 
   const allYears = Array.from(new Set([
     ...bills.map(b => b.year),
@@ -95,19 +105,19 @@ export default function AnalyticsScreen() {
   const billBarData: BarItem[] = yearBills.map(b => ({
     value: Math.round(b.total_amount),
     label: MONTHS_SHORT[b.month - 1],
-    color: b.status === 'paid' ? '#6366F1' : '#FCA5A5',
+    color: b.status === 'paid' ? t.chartBillPaid : t.chartBillUnpaid,
   }));
 
   const unitsBarData: BarItem[] = yearBills.map(b => ({
     value: Math.round(b.units_consumed),
     label: MONTHS_SHORT[b.month - 1],
-    color: '#10B981',
+    color: t.chartUnits,
   }));
 
   const rentBarData: BarItem[] = yearRents.map(r => ({
     value: Math.round(r.amount),
     label: MONTHS_SHORT[r.month - 1],
-    color: r.status === 'paid' ? '#0EA5E9' : '#FCA5A5',
+    color: r.status === 'paid' ? t.chartRentPaid : t.chartRentUnpaid,
   }));
 
   const paidBills = yearBills.filter(b => b.status === 'paid');
@@ -156,7 +166,7 @@ export default function AnalyticsScreen() {
 
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
 
-        <View style={styles.ytdCard}>
+        <View style={[styles.ytdCard, { backgroundColor: t.primary }]}>
           <Text style={styles.ytdLabel}>Total Paid {selectedYear}</Text>
           <Text style={styles.ytdAmount}>₹{ytdTotal.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</Text>
           <View style={styles.ytdRow}>
@@ -191,7 +201,7 @@ export default function AnalyticsScreen() {
           <>
             <View style={[styles.chartCard, { backgroundColor: t.card }]}>
               <Text style={[styles.chartTitle, { color: t.text }]}>Bill Amount (₹)</Text>
-              <Text style={[styles.chartSub, { color: t.textMuted }]}>{selectedYear} · purple = paid, pink = unpaid</Text>
+              <Text style={[styles.chartSub, { color: t.textMuted }]}>{selectedYear} · solid = paid, light = unpaid</Text>
               {billBarData.length > 0
                 ? <SimpleBarChart data={billBarData} guideColor={t.border} />
                 : <EmptyChart message="No electricity bills for this year" textColor={t.textPlaceholder} />}
@@ -207,12 +217,12 @@ export default function AnalyticsScreen() {
 
             {yearBills.length > 0 && (
               <View style={styles.statsGrid}>
-                <StatCard label="Avg Bill" value={`₹${avgBillAmount.toFixed(0)}`} color="#6366F1" bg={t.card} labelColor={t.textMuted} />
-                <StatCard label="Avg Units" value={`${avgUnits.toFixed(0)} u`} color="#10B981" bg={t.card} labelColor={t.textMuted} />
-                <StatCard label="Highest" value={`₹${maxBill.toFixed(0)}`} color="#F59E0B" bg={t.card} labelColor={t.textMuted} />
-                <StatCard label="Lowest" value={`₹${minBill.toFixed(0)}`} color="#0EA5E9" bg={t.card} labelColor={t.textMuted} />
-                <StatCard label="Total Paid" value={`₹${totalBillPaid.toLocaleString('en-IN')}`} color="#16A34A" bg={t.card} labelColor={t.textMuted} />
-                <StatCard label="Unpaid" value={String(unpaidBills.length)} color={unpaidBills.length > 0 ? '#DC2626' : t.textMuted} bg={t.card} labelColor={t.textMuted} />
+                <StatCard label="Avg Bill" value={`₹${avgBillAmount.toFixed(0)}`} color={t.chartBillPaid} bg={t.card} labelColor={t.textMuted} />
+                <StatCard label="Avg Units" value={`${avgUnits.toFixed(0)} u`} color={t.chartUnits} bg={t.card} labelColor={t.textMuted} />
+                <StatCard label="Highest" value={`₹${maxBill.toFixed(0)}`} color={t.chartAccentAmber} bg={t.card} labelColor={t.textMuted} />
+                <StatCard label="Lowest" value={`₹${minBill.toFixed(0)}`} color={t.chartAccentBlue} bg={t.card} labelColor={t.textMuted} />
+                <StatCard label="Total Paid" value={`₹${totalBillPaid.toLocaleString('en-IN')}`} color={t.chartAccentGreen} bg={t.card} labelColor={t.textMuted} />
+                <StatCard label="Unpaid" value={String(unpaidBills.length)} color={unpaidBills.length > 0 ? t.chartAccentRed : t.textMuted} bg={t.card} labelColor={t.textMuted} />
               </View>
             )}
           </>
@@ -220,7 +230,7 @@ export default function AnalyticsScreen() {
           <>
             <View style={[styles.chartCard, { backgroundColor: t.card }]}>
               <Text style={[styles.chartTitle, { color: t.text }]}>Rent Amount (₹)</Text>
-              <Text style={[styles.chartSub, { color: t.textMuted }]}>{selectedYear} · blue = paid, pink = unpaid</Text>
+              <Text style={[styles.chartSub, { color: t.textMuted }]}>{selectedYear} · solid = paid, light = unpaid</Text>
               {rentBarData.length > 0
                 ? <SimpleBarChart data={rentBarData} guideColor={t.border} />
                 : <EmptyChart message="No rent records for this year" textColor={t.textPlaceholder} />}
@@ -228,10 +238,10 @@ export default function AnalyticsScreen() {
 
             {yearRents.length > 0 && (
               <View style={styles.statsGrid}>
-                <StatCard label="Total Paid" value={`₹${totalRentPaid.toLocaleString('en-IN')}`} color="#0EA5E9" bg={t.card} labelColor={t.textMuted} />
-                <StatCard label="Months Paid" value={String(paidRents.length)} color="#16A34A" bg={t.card} labelColor={t.textMuted} />
-                <StatCard label="Unpaid" value={String(yearRents.filter(r => r.status === 'unpaid').length)} color={yearRents.filter(r => r.status === 'unpaid').length > 0 ? '#DC2626' : t.textMuted} bg={t.card} labelColor={t.textMuted} />
-                <StatCard label="Avg Rent" value={yearRents.length ? `₹${(yearRents.reduce((s, r) => s + r.amount, 0) / yearRents.length).toFixed(0)}` : '–'} color="#6366F1" bg={t.card} labelColor={t.textMuted} />
+                <StatCard label="Total Paid" value={`₹${totalRentPaid.toLocaleString('en-IN')}`} color={t.chartRentPaid} bg={t.card} labelColor={t.textMuted} />
+                <StatCard label="Months Paid" value={String(paidRents.length)} color={t.chartAccentGreen} bg={t.card} labelColor={t.textMuted} />
+                <StatCard label="Unpaid" value={String(yearRents.filter(r => r.status === 'unpaid').length)} color={yearRents.filter(r => r.status === 'unpaid').length > 0 ? t.chartAccentRed : t.textMuted} bg={t.card} labelColor={t.textMuted} />
+                <StatCard label="Avg Rent" value={yearRents.length ? `₹${(yearRents.reduce((s, r) => s + r.amount, 0) / yearRents.length).toFixed(0)}` : '–'} color={t.chartBillPaid} bg={t.card} labelColor={t.textMuted} />
               </View>
             )}
           </>
@@ -269,7 +279,7 @@ const styles = StyleSheet.create({
   yearLabel: { fontSize: 16, fontWeight: '700', minWidth: 50, textAlign: 'center' },
   content: { padding: 16, paddingBottom: 60 },
 
-  ytdCard: { backgroundColor: '#6366F1', borderRadius: 20, padding: 20, marginBottom: 16 },
+  ytdCard: { borderRadius: 20, padding: 20, marginBottom: 16 },
   ytdLabel: { fontSize: 13, color: 'rgba(255,255,255,0.75)', fontWeight: '600', textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 4 },
   ytdAmount: { fontSize: 32, fontWeight: '800', color: '#FFFFFF', marginBottom: 16 },
   ytdRow: { flexDirection: 'row', backgroundColor: 'rgba(255,255,255,0.15)', borderRadius: 12 },

@@ -1,11 +1,17 @@
 const OPENAI_API_KEY = process.env.EXPO_PUBLIC_OPENAI_API_KEY;
+const OPENAI_MODEL = 'gpt-4o';
+const OPENAI_ENDPOINT = 'https://api.openai.com/v1/chat/completions';
+
+export function hasOpenAIKey(): boolean {
+  return !!OPENAI_API_KEY;
+}
 
 async function callOpenAI(messages: object[], maxTokens = 50): Promise<string> {
   if (!OPENAI_API_KEY) throw new Error('OpenAI API key not configured.');
-  const response = await fetch('https://api.openai.com/v1/chat/completions', {
+  const response = await fetch(OPENAI_ENDPOINT, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${OPENAI_API_KEY}` },
-    body: JSON.stringify({ model: 'gpt-4o', max_tokens: maxTokens, messages }),
+    body: JSON.stringify({ model: OPENAI_MODEL, max_tokens: maxTokens, messages }),
   });
   if (!response.ok) {
     const err = await response.json().catch(() => ({}));

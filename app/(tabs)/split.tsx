@@ -13,11 +13,19 @@ import {
   addSplitRecord, getSplitRecords, deleteSplitRecord, type SplitRecord,
 } from '@/lib/database';
 import { useTheme } from '@/lib/theme';
+import { logError } from '@/lib/logger';
 
 const MONTHS_SHORT = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 
 function prevMonth(m: number, y: number) { return m === 1 ? { m: 12, y: y - 1 } : { m: m - 1, y }; }
 function nextMonth(m: number, y: number) { return m === 12 ? { m: 1, y: y + 1 } : { m: m + 1, y }; }
+function clampDayInput(input: string): string {
+  const digits = input.replace(/[^0-9]/g, '').slice(0, 2);
+  if (!digits) return '';
+  const n = parseInt(digits, 10);
+  if (n > 31) return '31';
+  return digits;
+}
 
 type ActiveTab = 'calculator' | 'history';
 
@@ -44,11 +52,21 @@ export default function SplitScreen() {
   const [showResult, setShowResult] = useState(false);
   const [copied, setCopied] = useState(false);
 
-  const load = useCallback(async () => {
-    setSplitHistory(await getSplitRecords(db));
+  const load = useCallback(async (signal?: { cancelled: boolean }) => {
+    try {
+      const data = await getSplitRecords(db);
+      if (signal?.cancelled) return;
+      setSplitHistory(data);
+    } catch (err) {
+      logError('Split.load', 'Failed to load split history', err);
+    }
   }, [db]);
 
-  useFocusEffect(useCallback(() => { load(); }, [load]));
+  useFocusEffect(useCallback(() => {
+    const signal = { cancelled: false };
+    load(signal);
+    return () => { signal.cancelled = true; };
+  }, [load]));
 
   const total = parseFloat(totalAmount || '0');
   const our = parseFloat(ourUnits || '0');
@@ -140,7 +158,7 @@ export default function SplitScreen() {
             <Text style={[styles.cardTitle, { color: t.text }]}>Billing Period</Text>
             <Text style={[styles.fieldLabel, { color: t.textSub }]}>From</Text>
             <DatePicker
-              day={fromDay} onDayChange={setFromDay}
+              day={fromDay} onDayChange={v => setFromDay(clampDayInput(v))}
               month={fromMonth} year={fromYear}
               onPrev={() => { const p = prevMonth(fromMonth, fromYear); setFromMonth(p.m); setFromYear(p.y); }}
               onNext={() => { const n = nextMonth(fromMonth, fromYear); setFromMonth(n.m); setFromYear(n.y); }}
@@ -148,7 +166,7 @@ export default function SplitScreen() {
             />
             <Text style={[styles.fieldLabel, { color: t.textSub }]}>To</Text>
             <DatePicker
-              day={toDay} onDayChange={setToDay}
+              day={toDay} onDayChange={v => setToDay(clampDayInput(v))}
               month={toMonth} year={toYear}
               onPrev={() => { const p = prevMonth(toMonth, toYear); setToMonth(p.m); setToYear(p.y); }}
               onNext={() => { const n = nextMonth(toMonth, toYear); setToMonth(n.m); setToYear(n.y); }}
@@ -197,9 +215,9 @@ export default function SplitScreen() {
                 </View>
               </View>
               <View style={[styles.divider, { backgroundColor: t.border }]} />
-              <PartyRow label="Our Floor" units={our} amount={ourAmount} color="#6366F1" textColor={t.text} subColor={t.textMuted} />
-              <PartyRow label="Top Floor" units={top} amount={topAmount} color="#0EA5E9" textColor={t.text} subColor={t.textMuted} />
-              <PartyRow label="Underground" units={underground} amount={undergroundAmount} color="#10B981" textColor={t.text} subColor={t.textMuted} />
+              <PartyRow label="Our Floor" units={our} amount={ourAmount} color={t.chartBillPaid} textColor={t.text} subColor={t.textMuted} />
+              <PartyRow label="Top Floor" units={top} amount={topAmount} color={t.chartAccentBlue} textColor={t.text} subColor={t.textMuted} />
+              <PartyRow label="Underground" units={underground} amount={undergroundAmount} color={t.chartUnits} textColor={t.text} subColor={t.textMuted} />
               <View style={[styles.totalVerify, { borderTopColor: t.border }]}>
                 <Text style={[styles.totalVerifyLabel, { color: t.textSub }]}>Total Check</Text>
                 <Text style={[styles.totalVerifyValue, Math.abs((ourAmount + topAmount + undergroundAmount) - total) < 1 ? { color: t.success } : { color: t.danger }]}>
@@ -265,9 +283,9 @@ export default function SplitScreen() {
                 </View>
 
                 <View style={styles.historyParties}>
-                  {record.our_units > 0 && <HistoryParty label="Our Floor" units={record.our_units} amount={record.our_amount} color="#6366F1" subColor={t.textMuted} />}
-                  {record.top_floor_units > 0 && <HistoryParty label="Top Floor" units={record.top_floor_units} amount={record.top_floor_amount} color="#0EA5E9" subColor={t.textMuted} />}
-                  {record.underground_units > 0 && <HistoryParty label="Underground" units={record.underground_units} amount={record.underground_amount} color="#10B981" subColor={t.textMuted} />}
+                  {record.our_units > 0 && <HistoryParty label="Our Floor" units={record.our_units} amount={record.our_amount} color={t.chartBillPaid} subColor={t.textMuted} />}
+                  {record.top_floor_units > 0 && <HistoryParty label="Top Floor" units={record.top_floor_units} amount={record.top_floor_amount} color={t.chartAccentBlue} subColor={t.textMuted} />}
+                  {record.underground_units > 0 && <HistoryParty label="Underground" units={record.underground_units} amount={record.underground_amount} color={t.chartUnits} subColor={t.textMuted} />}
                 </View>
               </View>
             ))
@@ -287,7 +305,7 @@ export default function SplitScreen() {
             <ScrollView style={[styles.messageBox, { backgroundColor: t.cardAlt, borderColor: t.border }]} showsVerticalScrollIndicator={false}>
               <Text style={[styles.messageText, { color: t.text }]} selectable>{generatedMessage}</Text>
             </ScrollView>
-            <TouchableOpacity style={[styles.copyBtn, copied && { backgroundColor: t.success }]} onPress={copyToClipboard}>
+            <TouchableOpacity style={[styles.copyBtn, { backgroundColor: copied ? t.success : t.primary }]} onPress={copyToClipboard}>
               <Text style={styles.copyBtnText}>{copied ? '✓ Copied to Clipboard' : 'Copy Message'}</Text>
             </TouchableOpacity>
             <TouchableOpacity style={styles.regenerateBtn} onPress={() => { setShowResult(false); handleGenerate(); }}>
@@ -413,7 +431,7 @@ const styles = StyleSheet.create({
   modalClose: { fontSize: 20, padding: 4 },
   messageBox: { borderRadius: 12, padding: 16, maxHeight: 320, borderWidth: 1, marginBottom: 16 },
   messageText: { fontSize: 14, lineHeight: 22 },
-  copyBtn: { backgroundColor: '#6366F1', borderRadius: 12, padding: 14, alignItems: 'center', marginBottom: 10 },
+  copyBtn: { borderRadius: 12, padding: 14, alignItems: 'center', marginBottom: 10 },
   copyBtnText: { color: '#FFFFFF', fontSize: 15, fontWeight: '700' },
   regenerateBtn: { alignItems: 'center', padding: 8 },
   regenerateBtnText: { fontSize: 14, fontWeight: '600' },
