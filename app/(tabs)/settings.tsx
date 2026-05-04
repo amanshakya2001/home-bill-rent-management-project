@@ -1,19 +1,21 @@
 import { useSQLiteContext } from 'expo-sqlite';
 import { useCallback, useState } from 'react';
 import {
-  Alert, ScrollView, StyleSheet, Text,
-  TextInput, TouchableOpacity, View,
+  Alert, Pressable, ScrollView, StyleSheet, Text, TextInput, View,
 } from 'react-native';
 import { useFocusEffect } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Clipboard from 'expo-clipboard';
 
-import { getSettings, updateSettings, getBills, getRentPayments, type AppSettings } from '@/lib/database';
+import { getSettings, updateApartmentName, getBills, getRentPayments, type AppSettings } from '@/lib/database';
 import { useTheme } from '@/lib/theme';
 import { buildCSV } from '@/lib/export';
+import { logError } from '@/lib/logger';
+import { Card } from '@/components/ui/card';
+import { PrimaryButton } from '@/components/ui/primary-button';
 
 export default function SettingsScreen() {
-  const { top } = useSafeAreaInsets();
+  const { top, bottom } = useSafeAreaInsets();
   const db = useSQLiteContext();
   const t = useTheme();
   const [settings, setSettings] = useState<AppSettings>({
@@ -25,13 +27,22 @@ export default function SettingsScreen() {
   const now = new Date();
   const [exportYear, setExportYear] = useState(now.getFullYear());
 
-  const load = useCallback(async () => {
-    const s = await getSettings(db);
-    setSettings(s);
-    setDirty(false);
+  const load = useCallback(async (signal?: { cancelled: boolean }) => {
+    try {
+      const s = await getSettings(db);
+      if (signal?.cancelled) return;
+      setSettings(s);
+      setDirty(false);
+    } catch (err) {
+      logError('Settings.load', 'Failed to load settings', err);
+    }
   }, [db]);
 
-  useFocusEffect(useCallback(() => { load(); }, [load]));
+  useFocusEffect(useCallback(() => {
+    const signal = { cancelled: false };
+    load(signal);
+    return () => { signal.cancelled = true; };
+  }, [load]));
 
   function update(patch: Partial<AppSettings>) {
     setSettings(prev => ({ ...prev, ...patch }));
@@ -55,91 +66,101 @@ export default function SettingsScreen() {
       Alert.alert('Error', 'Apartment name cannot be empty.');
       return;
     }
-    await updateSettings(db, settings);
-    setDirty(false);
-    Alert.alert('Saved', 'Settings updated successfully.');
+    try {
+      await updateApartmentName(db, settings.apartment_name.trim());
+      setDirty(false);
+      Alert.alert('Saved', 'Settings updated successfully.');
+    } catch (err) {
+      logError('settings.save', 'Failed to update apartment name', err);
+      Alert.alert('Error', 'Failed to save settings. Please try again.');
+    }
   }
 
   return (
-    <ScrollView
-      style={[styles.container, { backgroundColor: t.bg }]}
-      contentContainerStyle={[styles.content, { paddingTop: top + 20 }]}
-    >
-      <Text style={[styles.screenTitle, { color: t.text }]}>Settings</Text>
+    <View style={[styles.container, { backgroundColor: t.bg }]}>
+      <ScrollView
+        contentContainerStyle={[
+          styles.content,
+          { paddingTop: top + 20, paddingBottom: dirty ? bottom + 96 : bottom + 20 },
+        ]}
+        keyboardShouldPersistTaps="handled"
+      >
+        <Text style={[styles.screenTitle, { color: t.text }]}>Settings</Text>
 
-      <View style={styles.section}>
-        <Text style={[styles.sectionTitle, { color: t.textSub }]}>Apartment</Text>
-        <View style={[styles.card, { backgroundColor: t.card }]}>
-          <Text style={[styles.fieldLabel, { color: t.textSub }]}>Apartment Name</Text>
-          <TextInput
-            style={[styles.input, { borderColor: t.border, color: t.text, backgroundColor: t.inputBg }]}
-            value={settings.apartment_name}
-            onChangeText={v => update({ apartment_name: v })}
-            placeholder="e.g. My Apartment"
-            placeholderTextColor={t.textPlaceholder}
-          />
+        <View style={styles.section}>
+          <Text style={[styles.sectionTitle, { color: t.textSub }]}>Apartment</Text>
+          <Card style={styles.cardNoPad}>
+            <Text style={[styles.fieldLabel, { color: t.textSub }]}>Apartment Name</Text>
+            <TextInput
+              style={[styles.input, { borderColor: t.border, color: t.text, backgroundColor: t.inputBg }]}
+              value={settings.apartment_name}
+              onChangeText={v => update({ apartment_name: v })}
+              placeholder="e.g. My Apartment"
+              placeholderTextColor={t.textPlaceholder}
+            />
+          </Card>
         </View>
-      </View>
 
-      <View style={styles.section}>
-        <Text style={[styles.sectionTitle, { color: t.textSub }]}>Export Data</Text>
-        <View style={[styles.card, { backgroundColor: t.card }]}>
-          <View style={styles.row}>
-            <View style={styles.rowLeft}>
-              <Text style={[styles.rowLabel, { color: t.text }]}>Copy as CSV</Text>
-              <Text style={[styles.rowSub, { color: t.textMuted }]}>Paste into Sheets or Excel</Text>
+        <View style={styles.section}>
+          <Text style={[styles.sectionTitle, { color: t.textSub }]}>Export Data</Text>
+          <Card style={styles.cardNoPad}>
+            <View style={styles.row}>
+              <View style={styles.rowLeft}>
+                <Text style={[styles.rowLabel, { color: t.text }]}>Copy as CSV</Text>
+                <Text style={[styles.rowSub, { color: t.textMuted }]}>Paste into Sheets or Excel</Text>
+              </View>
+              <View style={styles.yearRow}>
+                <Pressable
+                  onPress={() => setExportYear(y => y - 1)}
+                  hitSlop={8}
+                  style={({ pressed }) => [styles.yearArrow, pressed && { opacity: 0.5 }]}
+                >
+                  <Text style={[styles.yearArrowText, { color: t.primary }]}>‹</Text>
+                </Pressable>
+                <Text style={[styles.yearValue, { color: t.text }]}>{exportYear}</Text>
+                <Pressable
+                  onPress={() => setExportYear(y => y + 1)}
+                  disabled={exportYear >= now.getFullYear()}
+                  hitSlop={8}
+                  style={({ pressed }) => [styles.yearArrow, pressed && { opacity: 0.5 }]}
+                >
+                  <Text style={[styles.yearArrowText, { color: exportYear >= now.getFullYear() ? t.textPlaceholder : t.primary }]}>›</Text>
+                </Pressable>
+              </View>
             </View>
-            <View style={styles.yearRow}>
-              <TouchableOpacity onPress={() => setExportYear(y => y - 1)} style={styles.yearArrow}>
-                <Text style={[styles.yearArrowText, { color: t.primary }]}>‹</Text>
-              </TouchableOpacity>
-              <Text style={[styles.yearValue, { color: t.text }]}>{exportYear}</Text>
-              <TouchableOpacity
-                onPress={() => setExportYear(y => y + 1)}
-                style={styles.yearArrow}
-                disabled={exportYear >= now.getFullYear()}
-              >
-                <Text style={[styles.yearArrowText, { color: exportYear >= now.getFullYear() ? t.textPlaceholder : t.primary }]}>›</Text>
-              </TouchableOpacity>
+            <View style={[styles.exportRow, { borderTopColor: t.border }]}>
+              <PrimaryButton
+                label={copied ? '✓ Copied to Clipboard' : 'Copy CSV'}
+                onPress={handleCopyCSV}
+                variant={copied ? 'success' : 'tonal'}
+                size="md"
+              />
             </View>
-          </View>
-          <View style={[styles.exportRow, { borderTopColor: t.border }]}>
-            <TouchableOpacity
-              style={[styles.exportBtn, { backgroundColor: copied ? t.successLight : t.primaryLight }]}
-              onPress={handleCopyCSV}
-            >
-              <Text style={[styles.exportBtnText, { color: copied ? t.success : t.primary }]}>
-                {copied ? '✓ Copied to Clipboard' : 'Copy CSV'}
-              </Text>
-            </TouchableOpacity>
-          </View>
+          </Card>
         </View>
-      </View>
+      </ScrollView>
 
       {dirty && (
-        <TouchableOpacity style={[styles.saveBtn, { backgroundColor: t.primary }]} onPress={save}>
-          <Text style={styles.saveBtnText}>Save Changes</Text>
-        </TouchableOpacity>
+        <View style={[styles.saveBar, { paddingBottom: bottom + 12, backgroundColor: t.bg, borderTopColor: t.border }]}>
+          <PrimaryButton label="Save Changes" onPress={save} size="lg" />
+        </View>
       )}
-    </ScrollView>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
-  content: { padding: 20, paddingBottom: 60 },
-  screenTitle: { fontSize: 26, fontWeight: '700', marginBottom: 24, marginTop: 8 },
+  content: { padding: 20 },
+  screenTitle: { fontSize: 26, fontWeight: '700', lineHeight: 32, marginBottom: 24, marginTop: 8 },
   section: { marginBottom: 24 },
-  sectionTitle: { fontSize: 13, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 6 },
-  card: {
-    borderRadius: 16, overflow: 'hidden',
-    shadowColor: '#000', shadowOpacity: 0.05, shadowRadius: 8,
-    shadowOffset: { width: 0, height: 2 }, elevation: 2,
-  },
-  fieldLabel: { fontSize: 13, fontWeight: '600', padding: 16, paddingBottom: 6 },
+  sectionTitle: { fontSize: 13, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 8, lineHeight: 16 },
+  cardNoPad: { padding: 0, overflow: 'hidden' },
+  fieldLabel: { fontSize: 13, fontWeight: '600', lineHeight: 18, paddingHorizontal: 16, paddingTop: 16, paddingBottom: 6 },
   input: {
     borderWidth: 1.5, borderRadius: 10,
-    padding: 12, fontSize: 16,
+    paddingHorizontal: 12, paddingVertical: 12,
+    fontSize: 16, lineHeight: 22, minHeight: 48,
     marginHorizontal: 16, marginBottom: 16,
   },
   row: {
@@ -147,15 +168,15 @@ const styles = StyleSheet.create({
     padding: 16,
   },
   rowLeft: { flex: 1, marginRight: 12 },
-  rowLabel: { fontSize: 15, fontWeight: '600' },
-  rowSub: { fontSize: 12, marginTop: 2 },
-  saveBtn: { borderRadius: 14, padding: 16, alignItems: 'center', marginTop: 8 },
-  saveBtnText: { color: '#FFFFFF', fontSize: 16, fontWeight: '700' },
+  rowLabel: { fontSize: 15, fontWeight: '600', lineHeight: 20 },
+  rowSub: { fontSize: 12, lineHeight: 16, marginTop: 2 },
   yearRow: { flexDirection: 'row', alignItems: 'center', gap: 2 },
-  yearArrow: { padding: 6 },
-  yearArrowText: { fontSize: 22, fontWeight: '300' },
-  yearValue: { fontSize: 15, fontWeight: '700', minWidth: 40, textAlign: 'center' },
+  yearArrow: { width: 36, height: 36, alignItems: 'center', justifyContent: 'center' },
+  yearArrowText: { fontSize: 22, fontWeight: '300', lineHeight: 26 },
+  yearValue: { fontSize: 15, fontWeight: '700', lineHeight: 20, minWidth: 40, textAlign: 'center' },
   exportRow: { borderTopWidth: 1, padding: 12 },
-  exportBtn: { borderRadius: 10, paddingVertical: 10, alignItems: 'center' },
-  exportBtnText: { fontSize: 14, fontWeight: '700' },
+  saveBar: {
+    position: 'absolute', left: 0, right: 0, bottom: 0,
+    paddingHorizontal: 20, paddingTop: 12, borderTopWidth: 1,
+  },
 });

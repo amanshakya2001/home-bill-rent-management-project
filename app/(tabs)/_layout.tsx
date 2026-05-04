@@ -1,48 +1,46 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Tabs } from 'expo-router';
-import { useFocusEffect } from 'expo-router';
+import { Redirect, Tabs, useFocusEffect } from 'expo-router';
 import { useSQLiteContext } from 'expo-sqlite';
-import { useColorScheme } from 'react-native';
 import { HapticTab } from '@/components/haptic-tab';
 import { IconSymbol } from '@/components/ui/icon-symbol';
-import { getBills, getRentPayments } from '@/lib/database';
-
-const PRIMARY = '#6366F1';
-
-function isOverdue(month: number, year: number, status: string) {
-  if (status === 'paid') return false;
-  const now = new Date();
-  const itemDate = new Date(year, month - 1, 1);
-  const currentStart = new Date(now.getFullYear(), now.getMonth(), 1);
-  return itemDate < currentStart;
-}
+import { getBills, getRentPayments, initialOnboardingDone } from '@/lib/database';
+import { isOverdue } from '@/lib/dates';
+import { logError } from '@/lib/logger';
+import { useTheme } from '@/lib/theme';
 
 export default function TabLayout() {
   const db = useSQLiteContext();
-  const scheme = useColorScheme();
-  const isDark = scheme === 'dark';
+  const t = useTheme();
   const [billBadge, setBillBadge] = useState(0);
   const [rentBadge, setRentBadge] = useState(0);
 
   const loadBadges = useCallback(async () => {
-    const [bills, rents] = await Promise.all([getBills(db), getRentPayments(db)]);
-    setBillBadge(bills.filter(b => isOverdue(b.month, b.year, b.status)).length);
-    setRentBadge(rents.filter(r => isOverdue(r.month, r.year, r.status)).length);
+    try {
+      const [bills, rents] = await Promise.all([getBills(db), getRentPayments(db)]);
+      setBillBadge(bills.filter(b => isOverdue(b.month, b.year, b.status)).length);
+      setRentBadge(rents.filter(r => isOverdue(r.month, r.year, r.status)).length);
+    } catch (err) {
+      logError('TabLayout.loadBadges', 'Failed to load badge counts', err);
+    }
   }, [db]);
 
   useEffect(() => { loadBadges(); }, [loadBadges]);
   useFocusEffect(useCallback(() => { loadBadges(); }, [loadBadges]));
 
+  if (!initialOnboardingDone) {
+    return <Redirect href="/onboarding" />;
+  }
+
   return (
     <Tabs
       screenOptions={{
-        tabBarActiveTintColor: PRIMARY,
-        tabBarInactiveTintColor: isDark ? '#64748B' : '#9CA3AF',
+        tabBarActiveTintColor: t.primary,
+        tabBarInactiveTintColor: t.textMuted,
         headerShown: false,
         tabBarButton: HapticTab,
         tabBarStyle: {
-          backgroundColor: isDark ? '#1E293B' : '#FFFFFF',
-          borderTopColor: isDark ? '#334155' : '#E5E7EB',
+          backgroundColor: t.tabBar,
+          borderTopColor: t.tabBorder,
           elevation: 8,
           shadowOpacity: 0.1,
         },
@@ -60,7 +58,7 @@ export default function TabLayout() {
           title: 'Electricity',
           tabBarIcon: ({ color }) => <IconSymbol size={26} name="bolt.fill" color={color} />,
           tabBarBadge: billBadge > 0 ? billBadge : undefined,
-          tabBarBadgeStyle: { backgroundColor: '#DC2626', fontSize: 10 },
+          tabBarBadgeStyle: { backgroundColor: t.danger, fontSize: 10 },
         }}
       />
       <Tabs.Screen
@@ -69,7 +67,7 @@ export default function TabLayout() {
           title: 'Rent',
           tabBarIcon: ({ color }) => <IconSymbol size={26} name="building.2.fill" color={color} />,
           tabBarBadge: rentBadge > 0 ? rentBadge : undefined,
-          tabBarBadgeStyle: { backgroundColor: '#DC2626', fontSize: 10 },
+          tabBarBadgeStyle: { backgroundColor: t.danger, fontSize: 10 },
         }}
       />
       <Tabs.Screen

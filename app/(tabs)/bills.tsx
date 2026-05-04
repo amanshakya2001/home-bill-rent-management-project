@@ -1,34 +1,44 @@
 import { useSQLiteContext } from 'expo-sqlite';
 import { useCallback, useRef, useState } from 'react';
 import {
-  ActivityIndicator, Alert, Animated, Image, Modal, RefreshControl,
-  ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View,
-  KeyboardAvoidingView, Platform,
+  ActivityIndicator, Alert, Animated, Image, Modal, Pressable,
+  RefreshControl, ScrollView, StyleSheet, Text, TextInput, View,
 } from 'react-native';
 import { useFocusEffect } from 'expo-router';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as ImagePicker from 'expo-image-picker';
 import * as Haptics from 'expo-haptics';
 import { Swipeable } from 'react-native-gesture-handler';
 
 import {
   getBills, addBill, updateBill, updateBillStatus, deleteBill,
-  updateBillImage, getLastBillReading, type Bill,
+  updateBillImage, getLastBillReading, getLastBillPricePerUnit, type Bill,
 } from '@/lib/database';
 import { readMeterFromImage } from '@/lib/openai';
-import { useTheme } from '@/lib/theme';
+import { useTheme, type Theme } from '@/lib/theme';
+import { isOverdue as isOverdueShared, safeParseFloat } from '@/lib/dates';
+import { logError } from '@/lib/logger';
+import { ScreenHeader } from '@/components/ui/screen-header';
+import { Pill } from '@/components/ui/pill';
+import { PrimaryButton } from '@/components/ui/primary-button';
+import { FilterPills } from '@/components/ui/filter-pills';
+import { EmptyState } from '@/components/ui/empty-state';
+import { BottomSheet } from '@/components/ui/bottom-sheet';
+import { MonthYearStepper } from '@/components/ui/month-year-stepper';
+import { ActionSheet, type ActionSheetItem } from '@/components/ui/action-sheet';
+import { IconSymbol } from '@/components/ui/icon-symbol';
 
 const MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December'];
 const MONTHS_SHORT = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 
-function isOverdue(bill: Bill) {
-  if (bill.status === 'paid') return false;
-  const now = new Date();
-  return new Date(bill.year, bill.month - 1, 1) < new Date(now.getFullYear(), now.getMonth(), 1);
-}
+const FILTERS = [
+  { value: 'all', label: 'All' },
+  { value: 'unpaid', label: 'Unpaid' },
+  { value: 'paid', label: 'Paid' },
+] as const;
+
+const isOverdue = (b: Bill) => isOverdueShared(b.month, b.year, b.status);
 
 export default function BillsScreen() {
-  const { top } = useSafeAreaInsets();
   const db = useSQLiteContext();
   const t = useTheme();
   const [bills, setBills] = useState<Bill[]>([]);
@@ -39,6 +49,7 @@ export default function BillsScreen() {
   const [scanning, setScanning] = useState(false);
   const [search, setSearch] = useState('');
   const [filterStatus, setFilterStatus] = useState<'all' | 'paid' | 'unpaid'>('all');
+  const [actionBill, setActionBill] = useState<Bill | null>(null);
 
   const now = new Date();
   const [formMonth, setFormMonth] = useState(now.getMonth() + 1);
@@ -48,14 +59,24 @@ export default function BillsScreen() {
   const [pricePerUnit, setPricePerUnit] = useState('');
   const [meterImage, setMeterImage] = useState<string | null>(null);
 
-  const unitsConsumed = Math.max(0, parseFloat(currReading || '0') - parseFloat(prevReading || '0'));
-  const total = unitsConsumed * parseFloat(pricePerUnit || '0');
+  const unitsConsumed = Math.max(0, safeParseFloat(currReading) - safeParseFloat(prevReading));
+  const total = unitsConsumed * safeParseFloat(pricePerUnit);
 
-  const load = useCallback(async () => {
-    setBills(await getBills(db));
+  const load = useCallback(async (signal?: { cancelled: boolean }) => {
+    try {
+      const data = await getBills(db);
+      if (signal?.cancelled) return;
+      setBills(data);
+    } catch (err) {
+      logError('Bills.load', 'Failed to load bills', err);
+    }
   }, [db]);
 
-  useFocusEffect(useCallback(() => { load(); }, [load]));
+  useFocusEffect(useCallback(() => {
+    const signal = { cancelled: false };
+    load(signal);
+    return () => { signal.cancelled = true; };
+  }, [load]));
 
   async function onRefresh() {
     setRefreshing(true);
@@ -86,9 +107,19 @@ export default function BillsScreen() {
     const n = new Date();
     setFormMonth(n.getMonth() + 1);
     setFormYear(n.getFullYear());
-    setCurrReading(''); setPricePerUnit(''); setMeterImage(null); setScanning(false);
-    const lastReading = await getLastBillReading(db);
-    setPrevReading(lastReading !== null ? String(lastReading) : '');
+    setCurrReading(''); setMeterImage(null); setScanning(false);
+    try {
+      const [lastReading, lastPrice] = await Promise.all([
+        getLastBillReading(db),
+        getLastBillPricePerUnit(db),
+      ]);
+      setPrevReading(lastReading !== null ? String(lastReading) : '');
+      setPricePerUnit(lastPrice !== null ? String(lastPrice) : '');
+    } catch (err) {
+      logError('Bills.openModal', 'Failed to prefill from last bill', err);
+      setPrevReading('');
+      setPricePerUnit('');
+    }
     setShowModal(true);
   }
 
@@ -137,39 +168,30 @@ export default function BillsScreen() {
     if (curr < prev) { Alert.alert('Error', 'Current reading cannot be less than previous reading.'); return; }
     if (!p || isNaN(p) || p <= 0) { Alert.alert('Error', 'Please enter a valid price per unit.'); return; }
     const consumed = curr - prev;
-    if (editingBill) {
-      await updateBill(db, editingBill.id, { month: formMonth, year: formYear, previous_reading: prev, current_reading: curr, units_consumed: consumed, price_per_unit: p, total_amount: consumed * p });
-      if (meterImage !== editingBill.image_uri) await updateBillImage(db, editingBill.id, meterImage);
-    } else {
-      await addBill(db, { month: formMonth, year: formYear, previous_reading: prev, current_reading: curr, units_consumed: consumed, price_per_unit: p, total_amount: consumed * p, status: 'unpaid', paid_date: null, image_uri: meterImage });
+    try {
+      if (editingBill) {
+        await updateBill(db, editingBill.id, { month: formMonth, year: formYear, previous_reading: prev, current_reading: curr, units_consumed: consumed, price_per_unit: p, total_amount: consumed * p });
+        if (meterImage !== editingBill.image_uri) await updateBillImage(db, editingBill.id, meterImage);
+      } else {
+        await addBill(db, { month: formMonth, year: formYear, previous_reading: prev, current_reading: curr, units_consumed: consumed, price_per_unit: p, total_amount: consumed * p, status: 'unpaid', paid_date: null, image_uri: meterImage });
+      }
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      setEditingBill(null); setShowModal(false); load();
+    } catch (err) {
+      logError('Bills.saveBill', 'Failed to save bill', err);
+      Alert.alert('Error', 'Could not save bill. Please try again.');
     }
-    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    setEditingBill(null); setShowModal(false); load();
   }
 
   async function toggleStatus(bill: Bill) {
     const newStatus = bill.status === 'paid' ? 'unpaid' : 'paid';
-    await updateBillStatus(db, bill.id, newStatus);
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    load();
-    // Recurring auto-entry: prompt to add next month
-    if (newStatus === 'paid') {
-      const nextMonth = bill.month === 12 ? 1 : bill.month + 1;
-      const nextYear = bill.month === 12 ? bill.year + 1 : bill.year;
-      const alreadyExists = bills.some(b => b.month === nextMonth && b.year === nextYear);
-      if (!alreadyExists) {
-        Alert.alert(
-          'Add Next Month?',
-          `Add electricity bill for ${MONTHS[nextMonth - 1]} ${nextYear}?`,
-          [
-            { text: 'Not Now', style: 'cancel' },
-            { text: 'Add', onPress: async () => {
-              await addBill(db, { month: nextMonth, year: nextYear, previous_reading: bill.current_reading, current_reading: 0, units_consumed: 0, price_per_unit: bill.price_per_unit, total_amount: 0, status: 'unpaid', paid_date: null, image_uri: null });
-              load();
-            }},
-          ]
-        );
-      }
+    try {
+      await updateBillStatus(db, bill.id, newStatus);
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+      load();
+    } catch (err) {
+      logError('Bills.toggleStatus', 'Failed to update bill status', err);
+      Alert.alert('Error', 'Could not update payment status. Please try again.');
     }
   }
 
@@ -183,41 +205,44 @@ export default function BillsScreen() {
     ]);
   }
 
-  function showCardOptions(bill: Bill) {
-    const options: any[] = [
-      { text: 'Edit Bill', onPress: () => openEditModal(bill) },
-      { text: bill.status === 'paid' ? 'Mark as Unpaid' : 'Mark as Paid', onPress: () => toggleStatus(bill) },
+  function buildActionItems(bill: Bill): ActionSheetItem[] {
+    const items: ActionSheetItem[] = [
+      { label: 'Edit Bill', onPress: () => openEditModal(bill) },
+      { label: bill.status === 'paid' ? 'Mark as Unpaid' : 'Mark as Paid', onPress: () => toggleStatus(bill) },
     ];
     if (bill.image_uri) {
-      options.push({ text: 'View Meter Photo', onPress: () => setViewImage(bill.image_uri) });
-      options.push({ text: 'Remove Photo', style: 'destructive', onPress: async () => { await updateBillImage(db, bill.id, null); load(); } });
+      items.push({ label: 'View Meter Photo', onPress: () => setViewImage(bill.image_uri) });
+      items.push({
+        label: 'Remove Photo', destructive: true,
+        onPress: async () => { await updateBillImage(db, bill.id, null); load(); },
+      });
     }
-    options.push({ text: 'Delete Bill', style: 'destructive', onPress: () => handleDelete(bill) });
-    options.push({ text: 'Cancel', style: 'cancel' });
-    Alert.alert(`${MONTHS_SHORT[bill.month - 1]} ${bill.year}`, 'Choose an action', options);
+    items.push({ label: 'Delete Bill', destructive: true, onPress: () => handleDelete(bill) });
+    return items;
   }
 
   return (
     <View style={[styles.container, { backgroundColor: t.bg }]}>
-      <View style={[styles.headerBar, { paddingTop: top + 16, backgroundColor: t.bg }]}>
-        <View style={styles.headerLeft}>
-          <Text style={[styles.screenTitle, { color: t.text }]}>Electricity Bills</Text>
-          {overdueCount > 0 && <View style={[styles.overdueBadge, { backgroundColor: t.dangerLight }]}><Text style={[styles.overdueBadgeText, { color: t.danger }]}>{overdueCount} overdue</Text></View>}
-        </View>
-        <TouchableOpacity style={[styles.addBtn, { backgroundColor: t.primary }]} onPress={openModal}>
-          <Text style={styles.addBtnText}>+ Add</Text>
-        </TouchableOpacity>
-      </View>
+      <ScreenHeader
+        title="Electricity Bills"
+        meta={overdueCount > 0 && <Pill label={`${overdueCount} overdue`} variant="danger" size="sm" />}
+        trailing={
+          <PrimaryButton label="+ Add" onPress={openModal} size="md" />
+        }
+      />
 
-      <View style={styles.searchRow}>
-        <TextInput style={[styles.searchInput, { backgroundColor: t.card, borderColor: t.border, color: t.text }]} value={search} onChangeText={setSearch} placeholder="Search..." placeholderTextColor={t.textPlaceholder} clearButtonMode="while-editing" />
-      </View>
-      <View style={styles.filterRow}>
-        {(['all', 'unpaid', 'paid'] as const).map(f => (
-          <TouchableOpacity key={f} style={[styles.filterBtn, { backgroundColor: filterStatus === f ? t.primary : t.border }]} onPress={() => setFilterStatus(f)}>
-            <Text style={[styles.filterBtnText, { color: filterStatus === f ? '#FFFFFF' : t.textSub }]}>{f.charAt(0).toUpperCase() + f.slice(1)}</Text>
-          </TouchableOpacity>
-        ))}
+      <View style={styles.controls}>
+        <TextInput
+          style={[styles.searchInput, { backgroundColor: t.card, borderColor: t.border, color: t.text }]}
+          value={search}
+          onChangeText={setSearch}
+          placeholder="Search by month, year or amount..."
+          placeholderTextColor={t.textPlaceholder}
+          clearButtonMode="while-editing"
+        />
+        <View style={{ marginTop: 12 }}>
+          <FilterPills options={FILTERS} value={filterStatus} onChange={setFilterStatus} />
+        </View>
       </View>
 
       <ScrollView
@@ -225,20 +250,23 @@ export default function BillsScreen() {
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={t.primary} />}
       >
         {bills.length === 0 ? (
-          <View style={styles.emptyState}>
-            <Text style={styles.emptyIcon}>⚡</Text>
-            <Text style={[styles.emptyTitle, { color: t.text }]}>No bills yet</Text>
-            <Text style={[styles.emptyText, { color: t.textMuted }]}>Tap "+ Add" to record your first electricity bill. You can also scan your meter with AI!</Text>
-          </View>
+          <EmptyState
+            icon="bolt.fill"
+            title="No bills yet"
+            description='Tap "+ Add" to record your first electricity bill. You can also scan your meter with AI.'
+          />
         ) : filteredBills.length === 0 ? (
-          <View style={styles.emptyState}>
-            <Text style={styles.emptyIcon}>🔍</Text>
-            <Text style={[styles.emptyTitle, { color: t.text }]}>No results</Text>
-            <Text style={[styles.emptyText, { color: t.textMuted }]}>Try a different search or filter.</Text>
-          </View>
+          <EmptyState
+            icon="magnifyingglass"
+            title="No results"
+            description="Try a different search or filter."
+          />
         ) : filteredBills.map(bill => (
-          <BillCard key={bill.id} bill={bill} t={t}
-            onPress={() => showCardOptions(bill)}
+          <BillCard
+            key={bill.id}
+            bill={bill}
+            t={t}
+            onPress={() => setActionBill(bill)}
             onPay={() => toggleStatus(bill)}
             onDelete={() => handleDelete(bill)}
             onViewImage={() => setViewImage(bill.image_uri)}
@@ -246,81 +274,146 @@ export default function BillsScreen() {
         ))}
       </ScrollView>
 
-      <Modal visible={showModal} animationType="slide" transparent onRequestClose={() => setShowModal(false)}>
-        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.modalOverlay}>
-          <View style={[styles.modalSheet, { backgroundColor: t.card }]}>
-            <View style={styles.modalHeader}>
-              <Text style={[styles.modalTitle, { color: t.text }]}>{editingBill ? 'Edit Bill' : 'Add Electricity Bill'}</Text>
-              <TouchableOpacity onPress={() => setShowModal(false)}><Text style={[styles.modalClose, { color: t.textMuted }]}>✕</Text></TouchableOpacity>
-            </View>
-            <ScrollView showsVerticalScrollIndicator={false}>
-              <Text style={[styles.fieldLabel, { color: t.textSub }]}>Month & Year</Text>
-              <View style={styles.monthRow}>
-                <TouchableOpacity style={styles.arrowBtn} onPress={() => { if (formMonth === 1) { setFormMonth(12); setFormYear(y => y - 1); } else setFormMonth(m => m - 1); }}><Text style={[styles.arrowText, { color: t.primary }]}>‹</Text></TouchableOpacity>
-                <Text style={[styles.monthText, { color: t.text }]}>{MONTHS[formMonth - 1]} {formYear}</Text>
-                <TouchableOpacity style={styles.arrowBtn} onPress={() => { if (formMonth === 12) { setFormMonth(1); setFormYear(y => y + 1); } else setFormMonth(m => m + 1); }}><Text style={[styles.arrowText, { color: t.primary }]}>›</Text></TouchableOpacity>
-              </View>
+      <BottomSheet
+        visible={showModal}
+        onClose={() => setShowModal(false)}
+        title={editingBill ? 'Edit Bill' : 'Add Electricity Bill'}
+      >
+        <ScrollView showsVerticalScrollIndicator={false}>
+          <Text style={[styles.fieldLabel, { color: t.textSub }]}>Month & Year</Text>
+          <MonthYearStepper
+            month={formMonth}
+            year={formYear}
+            onChange={(m, y) => { setFormMonth(m); setFormYear(y); }}
+          />
 
-              <Text style={[styles.fieldLabel, { color: t.textSub }]}>Previous Reading</Text>
-              <View style={styles.readingRow}>
-                <TextInput style={[styles.input, styles.readingInput, { backgroundColor: t.inputBg, borderColor: t.border, color: t.text }]} value={prevReading} onChangeText={setPrevReading} keyboardType="decimal-pad" placeholder="e.g. 4520" placeholderTextColor={t.textPlaceholder} />
-                {prevReading !== '' && <View style={[styles.autoFilledBadge, { backgroundColor: t.primaryLight }]}><Text style={[styles.autoFilledText, { color: t.primary }]}>auto-filled</Text></View>}
-              </View>
-
-              <Text style={[styles.fieldLabel, { color: t.textSub }]}>Current Reading</Text>
-              <View style={styles.readingRow}>
-                <TextInput style={[styles.input, styles.readingInput, { backgroundColor: t.inputBg, borderColor: t.border, color: t.text }]} value={currReading} onChangeText={setCurrReading} keyboardType="decimal-pad" placeholder="e.g. 4640" placeholderTextColor={t.textPlaceholder} editable={!scanning} />
-                <TouchableOpacity style={[styles.scanBtn, { backgroundColor: scanning ? t.textMuted : t.primary }]} onPress={promptScanSource} disabled={scanning}>
-                  {scanning ? <ActivityIndicator size="small" color="#FFFFFF" /> : <Text style={styles.scanBtnText}>📷 Scan</Text>}
-                </TouchableOpacity>
-              </View>
-
-              {meterImage && !scanning && (
-                <View style={[styles.meterImagePreview, { backgroundColor: t.cardAlt, borderColor: t.border }]}>
-                  <Image source={{ uri: meterImage }} style={styles.meterThumb} />
-                  <View style={styles.meterImageInfo}>
-                    <Text style={[styles.meterImageLabel, { color: t.text }]}>Meter photo saved</Text>
-                    <TouchableOpacity onPress={() => { setMeterImage(null); setCurrReading(''); }}><Text style={[styles.meterImageRemove, { color: t.danger }]}>Remove</Text></TouchableOpacity>
-                  </View>
-                </View>
-              )}
-
-              {scanning && <View style={[styles.scanningBanner, { backgroundColor: t.primaryLight }]}><ActivityIndicator size="small" color={t.primary} /><Text style={[styles.scanningText, { color: t.primaryDark }]}>Reading meter with AI...</Text></View>}
-
-              {prevReading && currReading && !scanning && (
-                <View style={[styles.unitsRow, { backgroundColor: t.successBg }]}>
-                  <Text style={[styles.unitsLabel, { color: t.success }]}>Units Consumed</Text>
-                  <Text style={[styles.unitsValue, { color: t.success }]}>{unitsConsumed.toFixed(0)} units</Text>
-                </View>
-              )}
-
-              <Text style={[styles.fieldLabel, { color: t.textSub }]}>Price per Unit (₹)</Text>
-              <TextInput style={[styles.input, { backgroundColor: t.inputBg, borderColor: t.border, color: t.text }]} value={pricePerUnit} onChangeText={setPricePerUnit} keyboardType="decimal-pad" placeholder="e.g. 7.50" placeholderTextColor={t.textPlaceholder} />
-
-              <View style={[styles.totalRow, { backgroundColor: t.primaryLight }]}>
-                <Text style={[styles.totalLabel, { color: t.primaryDark }]}>Total Amount</Text>
-                <Text style={[styles.totalDisplay, { color: t.primaryDark }]}>₹{isNaN(total) ? '0.00' : total.toFixed(2)}</Text>
-              </View>
-
-              <TouchableOpacity style={[styles.saveBtn, { backgroundColor: t.primary }]} onPress={saveBill}>
-                <Text style={styles.saveBtnText}>{editingBill ? 'Update Bill' : 'Save Bill'}</Text>
-              </TouchableOpacity>
-            </ScrollView>
+          <Text style={[styles.fieldLabel, { color: t.textSub }]}>Previous Reading</Text>
+          <View style={styles.readingRow}>
+            <TextInput
+              style={[styles.input, styles.readingInput, { backgroundColor: t.inputBg, borderColor: t.border, color: t.text }]}
+              value={prevReading}
+              onChangeText={setPrevReading}
+              keyboardType="decimal-pad"
+              placeholder="e.g. 4520"
+              placeholderTextColor={t.textPlaceholder}
+            />
+            {prevReading !== '' && (
+              <Pill label="auto-filled" variant="primary" size="sm" />
+            )}
           </View>
-        </KeyboardAvoidingView>
-      </Modal>
+
+          <Text style={[styles.fieldLabel, { color: t.textSub }]}>Current Reading</Text>
+          <View style={styles.readingRow}>
+            <TextInput
+              style={[styles.input, styles.readingInput, { backgroundColor: t.inputBg, borderColor: t.border, color: t.text }]}
+              value={currReading}
+              onChangeText={setCurrReading}
+              keyboardType="decimal-pad"
+              placeholder="e.g. 4640"
+              placeholderTextColor={t.textPlaceholder}
+              editable={!scanning}
+            />
+            <Pressable
+              onPress={promptScanSource}
+              disabled={scanning}
+              style={({ pressed }) => [
+                styles.scanBtn,
+                { backgroundColor: scanning ? t.textMuted : t.primary },
+                pressed && { opacity: 0.85 },
+              ]}
+            >
+              {scanning ? (
+                <ActivityIndicator size="small" color="#FFFFFF" />
+              ) : (
+                <View style={styles.scanBtnInner}>
+                  <IconSymbol name="camera.fill" size={14} color="#FFFFFF" />
+                  <Text style={styles.scanBtnText}>Scan</Text>
+                </View>
+              )}
+            </Pressable>
+          </View>
+
+          {meterImage && !scanning && (
+            <View style={[styles.meterImagePreview, { backgroundColor: t.cardAlt, borderColor: t.border }]}>
+              <Image source={{ uri: meterImage }} style={styles.meterThumb} />
+              <View style={styles.meterImageInfo}>
+                <Text style={[styles.meterImageLabel, { color: t.text }]}>Meter photo saved</Text>
+                <Pressable
+                  onPress={() => { setMeterImage(null); setCurrReading(''); }}
+                  hitSlop={8}
+                >
+                  <Text style={[styles.meterImageRemove, { color: t.dangerText }]}>Remove</Text>
+                </Pressable>
+              </View>
+            </View>
+          )}
+
+          {scanning && (
+            <View style={[styles.scanningBanner, { backgroundColor: t.primaryLight }]}>
+              <ActivityIndicator size="small" color={t.primary} />
+              <Text style={[styles.scanningText, { color: t.primaryText }]}>Reading meter with AI...</Text>
+            </View>
+          )}
+
+          {prevReading && currReading && !scanning && (
+            <View style={[styles.unitsRow, { backgroundColor: t.successBg }]}>
+              <Text style={[styles.unitsLabel, { color: t.successText }]}>Units Consumed</Text>
+              <Text style={[styles.unitsValue, { color: t.successText }]}>{unitsConsumed.toFixed(0)} units</Text>
+            </View>
+          )}
+
+          <Text style={[styles.fieldLabel, { color: t.textSub }]}>Price per Unit (₹)</Text>
+          <TextInput
+            style={[styles.input, { backgroundColor: t.inputBg, borderColor: t.border, color: t.text }]}
+            value={pricePerUnit}
+            onChangeText={setPricePerUnit}
+            keyboardType="decimal-pad"
+            placeholder="e.g. 7.50"
+            placeholderTextColor={t.textPlaceholder}
+          />
+
+          <View style={[styles.totalRow, { backgroundColor: t.primaryLight }]}>
+            <Text style={[styles.totalLabel, { color: t.primaryText }]}>Total Amount</Text>
+            <Text style={[styles.totalDisplay, { color: t.primaryText }]}>₹{isNaN(total) ? '0.00' : total.toFixed(2)}</Text>
+          </View>
+
+          <PrimaryButton
+            label={editingBill ? 'Update Bill' : 'Save Bill'}
+            onPress={saveBill}
+            size="lg"
+            style={{ marginTop: 20, marginBottom: 8 }}
+          />
+        </ScrollView>
+      </BottomSheet>
 
       <Modal visible={!!viewImage} animationType="fade" transparent onRequestClose={() => setViewImage(null)}>
         <View style={styles.imageViewer}>
-          <TouchableOpacity style={styles.imageViewerClose} onPress={() => setViewImage(null)}><Text style={styles.imageViewerCloseText}>✕</Text></TouchableOpacity>
+          <Pressable
+            onPress={() => setViewImage(null)}
+            hitSlop={12}
+            style={({ pressed }) => [styles.imageViewerClose, pressed && { opacity: 0.5 }]}
+          >
+            <Text style={styles.imageViewerCloseText}>✕</Text>
+          </Pressable>
           {viewImage && <Image source={{ uri: viewImage }} style={styles.imageViewerImg} resizeMode="contain" />}
         </View>
       </Modal>
+
+      <ActionSheet
+        visible={!!actionBill}
+        onClose={() => setActionBill(null)}
+        title={actionBill ? `${MONTHS_SHORT[actionBill.month - 1]} ${actionBill.year}` : undefined}
+        items={actionBill ? buildActionItems(actionBill) : []}
+      />
     </View>
   );
 }
 
-function BillCard({ bill, t, onPress, onPay, onDelete, onViewImage }: { bill: Bill; t: any; onPress: () => void; onPay: () => void; onDelete: () => void; onViewImage: () => void }) {
+function BillCard({
+  bill, t, onPress, onPay, onDelete, onViewImage,
+}: {
+  bill: Bill; t: Theme; onPress: () => void; onPay: () => void; onDelete: () => void; onViewImage: () => void;
+}) {
   const swipeRef = useRef<Swipeable>(null);
   const overdue = isOverdue(bill);
 
@@ -328,120 +421,140 @@ function BillCard({ bill, t, onPress, onPay, onDelete, onViewImage }: { bill: Bi
     const trans = progress.interpolate({ inputRange: [0, 1], outputRange: [120, 0] });
     return (
       <Animated.View style={[styles.swipeActions, { transform: [{ translateX: trans }] }]}>
-        {bill.status === 'unpaid' && <TouchableOpacity style={styles.swipePayBtn} onPress={() => { swipeRef.current?.close(); onPay(); }}><Text style={styles.swipeActionText}>✓ Pay</Text></TouchableOpacity>}
-        <TouchableOpacity style={styles.swipeDeleteBtn} onPress={() => { swipeRef.current?.close(); onDelete(); }}><Text style={styles.swipeActionText}>Delete</Text></TouchableOpacity>
+        {bill.status === 'unpaid' && (
+          <Pressable
+            style={[styles.swipeBtn, { backgroundColor: t.success }]}
+            onPress={() => { swipeRef.current?.close(); onPay(); }}
+          >
+            <Text style={styles.swipeActionText}>✓ Pay</Text>
+          </Pressable>
+        )}
+        <Pressable
+          style={[styles.swipeBtn, { backgroundColor: t.danger }]}
+          onPress={() => { swipeRef.current?.close(); onDelete(); }}
+        >
+          <Text style={styles.swipeActionText}>Delete</Text>
+        </Pressable>
       </Animated.View>
     );
   }
 
   return (
     <Swipeable ref={swipeRef} renderRightActions={renderRightActions} overshootRight={false}>
-      <TouchableOpacity style={[styles.card, { backgroundColor: t.card }, overdue && { borderWidth: 1.5, borderColor: t.danger }]} onPress={onPress} activeOpacity={0.7}>
+      <Pressable
+        onPress={onPress}
+        style={({ pressed }) => [
+          styles.card,
+          { backgroundColor: t.card, shadowColor: t.shadow },
+          overdue && { borderWidth: 1.5, borderColor: t.danger },
+          pressed && { opacity: 0.85 },
+        ]}
+      >
         {overdue && <View style={[styles.overdueStripe, { backgroundColor: t.danger }]} />}
         <View style={styles.cardTop}>
-          <View>
+          <View style={{ flex: 1 }}>
             <Text style={[styles.cardTitle, { color: t.text }]}>{MONTHS[bill.month - 1]} {bill.year}</Text>
-            {overdue && <Text style={[styles.overdueLabel, { color: t.danger }]}>OVERDUE</Text>}
           </View>
           <View style={styles.cardTopRight}>
-            {bill.image_uri && <TouchableOpacity onPress={onViewImage}><Image source={{ uri: bill.image_uri }} style={styles.thumbnail} /></TouchableOpacity>}
-            <View style={[styles.badge, bill.status === 'paid' ? { backgroundColor: t.successLight } : { backgroundColor: t.dangerLight }]}>
-              <Text style={[styles.badgeText, { color: bill.status === 'paid' ? t.success : t.danger }]}>{bill.status === 'paid' ? 'PAID' : 'UNPAID'}</Text>
-            </View>
+            {bill.image_uri && (
+              <Pressable onPress={onViewImage} hitSlop={4}>
+                <Image source={{ uri: bill.image_uri }} style={[styles.thumbnail, { borderColor: t.border }]} />
+              </Pressable>
+            )}
+            <Pill
+              label={bill.status === 'paid' ? 'PAID' : overdue ? 'OVERDUE' : 'UNPAID'}
+              variant={bill.status === 'paid' ? 'success' : 'danger'}
+            />
           </View>
         </View>
         <View style={[styles.cardBottom, { backgroundColor: t.cardAlt }]}>
-          <View style={styles.statItem}><Text style={[styles.statLabel, { color: t.textMuted }]}>Prev</Text><Text style={[styles.statValue, { color: t.textSub }]}>{bill.previous_reading}</Text></View>
+          <View style={styles.statItem}>
+            <Text style={[styles.statLabel, { color: t.textMuted }]}>Prev</Text>
+            <Text style={[styles.statValue, { color: t.textSub }]}>{bill.previous_reading}</Text>
+          </View>
           <View style={[styles.statDivider, { backgroundColor: t.border }]} />
-          <View style={styles.statItem}><Text style={[styles.statLabel, { color: t.textMuted }]}>Curr</Text><Text style={[styles.statValue, { color: t.textSub }]}>{bill.current_reading}</Text></View>
+          <View style={styles.statItem}>
+            <Text style={[styles.statLabel, { color: t.textMuted }]}>Curr</Text>
+            <Text style={[styles.statValue, { color: t.textSub }]}>{bill.current_reading}</Text>
+          </View>
           <View style={[styles.statDivider, { backgroundColor: t.border }]} />
-          <View style={styles.statItem}><Text style={[styles.statLabel, { color: t.textMuted }]}>Units</Text><Text style={[styles.statValue, { color: t.textSub }]}>{bill.units_consumed}</Text></View>
+          <View style={styles.statItem}>
+            <Text style={[styles.statLabel, { color: t.textMuted }]}>Units</Text>
+            <Text style={[styles.statValue, { color: t.textSub }]}>{bill.units_consumed}</Text>
+          </View>
           <View style={[styles.statDivider, { backgroundColor: t.border }]} />
-          <View style={styles.statItem}><Text style={[styles.statLabel, { color: t.textMuted }]}>Total</Text><Text style={[styles.statValue, { color: t.primary, fontWeight: '700' }]}>₹{bill.total_amount.toFixed(2)}</Text></View>
+          <View style={styles.statItem}>
+            <Text style={[styles.statLabel, { color: t.textMuted }]}>Total</Text>
+            <Text style={[styles.statValue, { color: t.text, fontWeight: '700' }]}>₹{bill.total_amount.toFixed(2)}</Text>
+          </View>
         </View>
         {bill.status === 'unpaid' && (
-          <TouchableOpacity style={[styles.quickPayBtn, { backgroundColor: t.successBg, borderColor: t.successLight }]} onPress={onPay}>
-            <Text style={[styles.quickPayText, { color: t.success }]}>Mark as Paid</Text>
-          </TouchableOpacity>
+          <PrimaryButton
+            label="Mark as Paid"
+            onPress={onPay}
+            variant="success"
+            style={{ marginTop: 12 }}
+          />
         )}
-      </TouchableOpacity>
+      </Pressable>
     </Swipeable>
   );
 }
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
-  headerBar: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 20, paddingBottom: 10 },
-  headerLeft: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  screenTitle: { fontSize: 22, fontWeight: '700' },
-  overdueBadge: { borderRadius: 8, paddingHorizontal: 8, paddingVertical: 3 },
-  overdueBadgeText: { fontSize: 11, fontWeight: '700' },
-  addBtn: { borderRadius: 10, paddingHorizontal: 16, paddingVertical: 8 },
-  addBtnText: { color: '#FFFFFF', fontWeight: '700', fontSize: 15 },
-  searchRow: { paddingHorizontal: 16, paddingBottom: 8 },
-  searchInput: { borderRadius: 12, paddingHorizontal: 14, paddingVertical: 10, fontSize: 14, borderWidth: 1.5 },
-  filterRow: { flexDirection: 'row', paddingHorizontal: 16, gap: 8, marginBottom: 8 },
-  filterBtn: { flex: 1, paddingVertical: 6, borderRadius: 8, alignItems: 'center' },
-  filterBtnText: { fontSize: 13, fontWeight: '600' },
+  controls: { paddingHorizontal: 20, paddingBottom: 12 },
+  searchInput: {
+    borderRadius: 12, paddingHorizontal: 14, paddingVertical: 12,
+    fontSize: 14, lineHeight: 18, borderWidth: 1.5, minHeight: 44,
+  },
   list: { padding: 16, paddingBottom: 40 },
-  card: { borderRadius: 16, padding: 16, marginBottom: 12, shadowColor: '#000', shadowOpacity: 0.06, shadowRadius: 8, shadowOffset: { width: 0, height: 2 }, elevation: 2, overflow: 'hidden' },
+  card: {
+    borderRadius: 16, padding: 16, marginBottom: 12,
+    shadowOpacity: 0.06, shadowRadius: 8,
+    shadowOffset: { width: 0, height: 2 }, elevation: 2, overflow: 'hidden',
+  },
   overdueStripe: { position: 'absolute', left: 0, top: 0, bottom: 0, width: 4 },
-  overdueLabel: { fontSize: 10, fontWeight: '800', letterSpacing: 0.5, marginTop: 2 },
-  cardTop: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 16 },
+  cardTop: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 16, gap: 12 },
   cardTopRight: { alignItems: 'flex-end', gap: 8 },
-  cardTitle: { fontSize: 17, fontWeight: '700' },
-  thumbnail: { width: 52, height: 52, borderRadius: 8, borderWidth: 1, borderColor: '#E5E7EB' },
-  badge: { borderRadius: 8, paddingHorizontal: 10, paddingVertical: 4 },
-  badgeText: { fontSize: 12, fontWeight: '700', letterSpacing: 0.5 },
+  cardTitle: { fontSize: 17, fontWeight: '700', lineHeight: 22 },
+  thumbnail: { width: 52, height: 52, borderRadius: 8, borderWidth: 1 },
   cardBottom: { flexDirection: 'row', justifyContent: 'space-between', borderRadius: 10, padding: 12 },
   statItem: { flex: 1, alignItems: 'center' },
-  statLabel: { fontSize: 11, fontWeight: '600', textTransform: 'uppercase', marginBottom: 4 },
-  statValue: { fontSize: 14, fontWeight: '600' },
+  statLabel: { fontSize: 11, fontWeight: '600', textTransform: 'uppercase', marginBottom: 4, lineHeight: 14 },
+  statValue: { fontSize: 14, fontWeight: '600', lineHeight: 18 },
   statDivider: { width: 1 },
-  quickPayBtn: { marginTop: 10, borderRadius: 10, paddingVertical: 8, alignItems: 'center', borderWidth: 1 },
-  quickPayText: { fontSize: 13, fontWeight: '700' },
   swipeActions: { flexDirection: 'row', marginBottom: 12, borderRadius: 16, overflow: 'hidden' },
-  swipePayBtn: { backgroundColor: '#16A34A', justifyContent: 'center', alignItems: 'center', width: 70 },
-  swipeDeleteBtn: { backgroundColor: '#DC2626', justifyContent: 'center', alignItems: 'center', width: 70 },
-  swipeActionText: { color: '#FFFFFF', fontWeight: '700', fontSize: 13 },
-  emptyState: { alignItems: 'center', paddingVertical: 60 },
-  emptyIcon: { fontSize: 48, marginBottom: 12 },
-  emptyTitle: { fontSize: 18, fontWeight: '700', marginBottom: 8 },
-  emptyText: { fontSize: 14, textAlign: 'center', lineHeight: 20, paddingHorizontal: 24 },
-  modalOverlay: { flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(0,0,0,0.4)' },
-  modalSheet: { borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: 24, maxHeight: '92%' },
-  modalHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 },
-  modalTitle: { fontSize: 20, fontWeight: '700' },
-  modalClose: { fontSize: 20, padding: 4 },
-  fieldLabel: { fontSize: 13, fontWeight: '600', marginBottom: 6, marginTop: 14 },
-  monthRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 20 },
-  arrowBtn: { padding: 8 },
-  arrowText: { fontSize: 28, fontWeight: '300' },
-  monthText: { fontSize: 18, fontWeight: '700', minWidth: 160, textAlign: 'center' },
-  input: { borderWidth: 1.5, borderRadius: 12, padding: 14, fontSize: 16 },
+  swipeBtn: { justifyContent: 'center', alignItems: 'center', width: 70 },
+  swipeActionText: { color: '#FFFFFF', fontWeight: '700', fontSize: 13, lineHeight: 18 },
+  fieldLabel: { fontSize: 13, fontWeight: '600', lineHeight: 18, marginBottom: 6, marginTop: 16 },
+  input: { borderWidth: 1.5, borderRadius: 12, padding: 14, fontSize: 16, lineHeight: 22, minHeight: 48 },
   readingRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   readingInput: { flex: 1 },
-  autoFilledBadge: { borderRadius: 6, paddingHorizontal: 8, paddingVertical: 4 },
-  autoFilledText: { fontSize: 11, fontWeight: '600' },
-  scanBtn: { borderRadius: 12, paddingHorizontal: 14, paddingVertical: 14, alignItems: 'center', justifyContent: 'center', minWidth: 80 },
-  scanBtnText: { fontSize: 13, fontWeight: '700', color: '#FFFFFF' },
+  scanBtn: {
+    borderRadius: 12, paddingHorizontal: 14, paddingVertical: 14,
+    alignItems: 'center', justifyContent: 'center', minHeight: 48, minWidth: 88,
+  },
+  scanBtnInner: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  scanBtnText: { fontSize: 13, fontWeight: '700', color: '#FFFFFF', lineHeight: 18 },
   scanningBanner: { flexDirection: 'row', alignItems: 'center', gap: 10, borderRadius: 10, padding: 12, marginTop: 8 },
-  scanningText: { fontSize: 14, fontWeight: '600' },
+  scanningText: { fontSize: 14, fontWeight: '600', lineHeight: 18 },
   meterImagePreview: { flexDirection: 'row', alignItems: 'center', gap: 12, borderRadius: 12, padding: 10, marginTop: 8, borderWidth: 1 },
   meterThumb: { width: 56, height: 56, borderRadius: 8 },
   meterImageInfo: { flex: 1 },
-  meterImageLabel: { fontSize: 13, fontWeight: '600' },
-  meterImageRemove: { fontSize: 12, marginTop: 4 },
+  meterImageLabel: { fontSize: 13, fontWeight: '600', lineHeight: 18 },
+  meterImageRemove: { fontSize: 13, fontWeight: '600', lineHeight: 18, marginTop: 4 },
   unitsRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', borderRadius: 10, padding: 12, marginTop: 8 },
-  unitsLabel: { fontSize: 13, fontWeight: '600' },
-  unitsValue: { fontSize: 15, fontWeight: '700' },
-  totalRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', borderRadius: 12, padding: 14, marginTop: 14 },
-  totalLabel: { fontSize: 14, fontWeight: '600' },
-  totalDisplay: { fontSize: 20, fontWeight: '700' },
-  saveBtn: { borderRadius: 14, padding: 16, marginTop: 20, marginBottom: 8, alignItems: 'center' },
-  saveBtnText: { color: '#FFFFFF', fontSize: 16, fontWeight: '700' },
+  unitsLabel: { fontSize: 13, fontWeight: '600', lineHeight: 18 },
+  unitsValue: { fontSize: 15, fontWeight: '700', lineHeight: 20 },
+  totalRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', borderRadius: 12, padding: 14, marginTop: 16 },
+  totalLabel: { fontSize: 14, fontWeight: '600', lineHeight: 18 },
+  totalDisplay: { fontSize: 20, fontWeight: '700', lineHeight: 26 },
   imageViewer: { flex: 1, backgroundColor: 'rgba(0,0,0,0.95)', justifyContent: 'center', alignItems: 'center' },
-  imageViewerClose: { position: 'absolute', top: 56, right: 20, zIndex: 10, padding: 10 },
-  imageViewerCloseText: { color: '#FFFFFF', fontSize: 24, fontWeight: '300' },
+  imageViewerClose: {
+    position: 'absolute', top: 56, right: 20, zIndex: 10,
+    width: 44, height: 44, alignItems: 'center', justifyContent: 'center',
+  },
+  imageViewerCloseText: { color: '#FFFFFF', fontSize: 24, fontWeight: '300', lineHeight: 28 },
   imageViewerImg: { width: '100%', height: '80%' },
 });

@@ -1,4 +1,5 @@
 import * as SQLite from 'expo-sqlite';
+import { logError, logWarn } from './logger';
 
 // Set by initDatabase so AppNavigator can read it without a second DB call
 export let initialOnboardingDone = false;
@@ -47,18 +48,20 @@ export type SplitRecord = {
 };
 
 export async function initDatabase(db: SQLite.SQLiteDatabase): Promise<void> {
-  await db.execAsync(`
-    PRAGMA journal_mode = WAL;
+  // WAL pragma must run outside any transaction — separate execAsync call
+  await db.execAsync(`PRAGMA journal_mode = WAL;`);
 
+  // Schema for fresh installs. Existing installs may be missing columns; migrations below patch them.
+  await db.execAsync(`
     CREATE TABLE IF NOT EXISTS electricity_bills (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       month INTEGER NOT NULL,
       year INTEGER NOT NULL,
       previous_reading REAL NOT NULL DEFAULT 0,
       current_reading REAL NOT NULL DEFAULT 0,
-      units_consumed REAL NOT NULL,
-      price_per_unit REAL NOT NULL,
-      total_amount REAL NOT NULL,
+      units_consumed REAL NOT NULL DEFAULT 0,
+      price_per_unit REAL NOT NULL DEFAULT 0,
+      total_amount REAL NOT NULL DEFAULT 0,
       status TEXT NOT NULL DEFAULT 'unpaid',
       paid_date TEXT,
       image_uri TEXT,
@@ -69,7 +72,7 @@ export async function initDatabase(db: SQLite.SQLiteDatabase): Promise<void> {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       month INTEGER NOT NULL,
       year INTEGER NOT NULL,
-      amount REAL NOT NULL,
+      amount REAL NOT NULL DEFAULT 0,
       status TEXT NOT NULL DEFAULT 'unpaid',
       paid_date TEXT,
       created_at TEXT DEFAULT (datetime('now'))
@@ -96,26 +99,49 @@ export async function initDatabase(db: SQLite.SQLiteDatabase): Promise<void> {
       onboarding_done INTEGER NOT NULL DEFAULT 0
     );
 
-    INSERT OR IGNORE INTO app_settings (id, apartment_name, onboarding_done)
-    VALUES (1, 'My Apartment', 0);
+    INSERT OR IGNORE INTO app_settings (id, apartment_name)
+    VALUES (1, 'My Apartment');
   `);
 
-  // Migrations — use runSync so everything finishes before any component can read the DB
-  const migrations = [
-    `ALTER TABLE electricity_bills ADD COLUMN image_uri TEXT;`,
-    `ALTER TABLE electricity_bills ADD COLUMN previous_reading REAL NOT NULL DEFAULT 0;`,
-    `ALTER TABLE electricity_bills ADD COLUMN current_reading REAL NOT NULL DEFAULT 0;`,
-    `ALTER TABLE app_settings ADD COLUMN onboarding_done INTEGER NOT NULL DEFAULT 0;`,
-    `UPDATE app_settings SET onboarding_done = 1 WHERE id = 1 AND apartment_name != 'My Apartment';`,
-  ];
-  for (const sql of migrations) {
-    try { db.runSync(sql); } catch { /* column already exists or no-op */ }
+  // Migrations — only run ALTER if column is missing on pre-existing installs
+  function hasColumn(table: string, column: string): boolean {
+    try {
+      const cols = db.getAllSync<{ name: string }>(`PRAGMA table_info(${table})`);
+      return cols.some(c => c.name === column);
+    } catch (err) {
+      logError('database.hasColumn', `Failed to read table_info for ${table}`, err);
+      return true; // assume present so we don't crash trying to add
+    }
   }
 
-  const row = db.getFirstSync<{ onboarding_done: number }>(
-    'SELECT onboarding_done FROM app_settings WHERE id = 1'
+  function safeRun(sql: string, label: string) {
+    try { db.runSync(sql); } catch (err) { logWarn('database.migration', label, err); }
+  }
+
+  if (!hasColumn('electricity_bills', 'image_uri'))
+    safeRun(`ALTER TABLE electricity_bills ADD COLUMN image_uri TEXT`, 'add image_uri');
+  if (!hasColumn('electricity_bills', 'previous_reading'))
+    safeRun(`ALTER TABLE electricity_bills ADD COLUMN previous_reading REAL NOT NULL DEFAULT 0`, 'add previous_reading');
+  if (!hasColumn('electricity_bills', 'current_reading'))
+    safeRun(`ALTER TABLE electricity_bills ADD COLUMN current_reading REAL NOT NULL DEFAULT 0`, 'add current_reading');
+  if (!hasColumn('app_settings', 'onboarding_done'))
+    safeRun(`ALTER TABLE app_settings ADD COLUMN onboarding_done INTEGER NOT NULL DEFAULT 0`, 'add onboarding_done');
+
+  // For users who already named their apartment before the flag existed, mark onboarding done
+  safeRun(
+    `UPDATE app_settings SET onboarding_done = 1 WHERE id = 1 AND apartment_name != 'My Apartment' AND onboarding_done = 0`,
+    'backfill onboarding_done',
   );
-  initialOnboardingDone = (row?.onboarding_done ?? 0) === 1;
+
+  try {
+    const row = db.getFirstSync<{ onboarding_done: number }>(
+      'SELECT onboarding_done FROM app_settings WHERE id = 1'
+    );
+    initialOnboardingDone = (row?.onboarding_done ?? 0) === 1;
+  } catch (err) {
+    logError('database.init', 'Failed to read onboarding_done', err);
+    initialOnboardingDone = false;
+  }
 }
 
 // Bills
@@ -124,6 +150,13 @@ export async function getLastBillReading(db: SQLite.SQLiteDatabase): Promise<num
     'SELECT current_reading FROM electricity_bills ORDER BY year DESC, month DESC LIMIT 1'
   );
   return row?.current_reading ?? null;
+}
+
+export async function getLastBillPricePerUnit(db: SQLite.SQLiteDatabase): Promise<number | null> {
+  const row = await db.getFirstAsync<{ price_per_unit: number }>(
+    'SELECT price_per_unit FROM electricity_bills WHERE price_per_unit > 0 ORDER BY year DESC, month DESC LIMIT 1'
+  );
+  return row?.price_per_unit ?? null;
 }
 
 export function getBills(db: SQLite.SQLiteDatabase): Promise<Bill[]> {
@@ -198,6 +231,13 @@ export function getRentPayments(db: SQLite.SQLiteDatabase): Promise<Rent[]> {
   );
 }
 
+export async function getLastRentAmount(db: SQLite.SQLiteDatabase): Promise<number | null> {
+  const row = await db.getFirstAsync<{ amount: number }>(
+    'SELECT amount FROM rent_payments WHERE amount > 0 ORDER BY year DESC, month DESC LIMIT 1'
+  );
+  return row?.amount ?? null;
+}
+
 export async function addRentPayment(
   db: SQLite.SQLiteDatabase,
   rent: Omit<Rent, 'id'>
@@ -266,19 +306,38 @@ export async function deleteSplitRecord(db: SQLite.SQLiteDatabase, id: number): 
 }
 
 // Settings
+const DEFAULT_SETTINGS: AppSettings = { apartment_name: 'My Apartment', onboarding_done: 0 };
+
 export async function getSettings(db: SQLite.SQLiteDatabase): Promise<AppSettings> {
-  const settings = await db.getFirstAsync<AppSettings>(
-    'SELECT apartment_name, onboarding_done FROM app_settings WHERE id = 1'
-  );
-  return settings ?? { apartment_name: 'My Apartment', onboarding_done: 0 };
+  // Schema-drift safe: try the full select first, fall back if onboarding_done column is missing
+  try {
+    const settings = await db.getFirstAsync<AppSettings>(
+      'SELECT apartment_name, onboarding_done FROM app_settings WHERE id = 1'
+    );
+    return settings ?? DEFAULT_SETTINGS;
+  } catch (err) {
+    logWarn('database.getSettings', 'Falling back to apartment_name only', err);
+    try {
+      const row = await db.getFirstAsync<{ apartment_name: string }>(
+        'SELECT apartment_name FROM app_settings WHERE id = 1'
+      );
+      return row ? { apartment_name: row.apartment_name, onboarding_done: 0 } : DEFAULT_SETTINGS;
+    } catch (err2) {
+      logError('database.getSettings', 'Failed entirely', err2);
+      return DEFAULT_SETTINGS;
+    }
+  }
 }
 
-export async function updateSettings(
-  db: SQLite.SQLiteDatabase,
-  settings: AppSettings
-): Promise<void> {
-  await db.runAsync(
-    `UPDATE app_settings SET apartment_name = ?, onboarding_done = ? WHERE id = 1`,
-    settings.apartment_name, settings.onboarding_done
-  );
+export async function updateApartmentName(db: SQLite.SQLiteDatabase, name: string): Promise<void> {
+  await db.runAsync(`UPDATE app_settings SET apartment_name = ? WHERE id = 1`, name);
+}
+
+export async function markOnboardingDone(db: SQLite.SQLiteDatabase): Promise<void> {
+  await db.runAsync(`UPDATE app_settings SET onboarding_done = 1 WHERE id = 1`);
+  initialOnboardingDone = true;
+}
+
+export function setOnboardingDone(): void {
+  initialOnboardingDone = true;
 }

@@ -18,6 +18,28 @@ const MAPPING = {
   'paperplane.fill': 'send',
   'chevron.left.forwardslash.chevron.right': 'code',
   'chevron.right': 'chevron-right',
+  'chevron.left': 'chevron-left',
+  // Tab bar icons
+  'bolt.fill': 'bolt',
+  'building.2.fill': 'apartment',
+  'person.2.fill': 'group',
+  'chart.bar.fill': 'bar-chart',
+  'gearshape.fill': 'settings',
+  // Action / status icons
+  'sparkles': 'auto-awesome',
+  'magnifyingglass': 'search',
+  'checkmark': 'check',
+  'checkmark.circle.fill': 'check-circle',
+  'xmark': 'close',
+  'plus': 'add',
+  'camera.fill': 'photo-camera',
+  'pencil': 'edit',
+  'trash': 'delete',
+  'doc.on.doc': 'content-copy',
+  'square.and.arrow.up': 'ios-share',
+  'exclamationmark.triangle.fill': 'warning',
+  'list.bullet': 'list',
+  'photo': 'photo',
 } as IconMapping;
 
 /**
