@@ -1,6 +1,9 @@
 import { useSQLiteContext } from 'expo-sqlite';
 import { useCallback, useState } from 'react';
-import { ActivityIndicator, RefreshControl, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import {
+  ActivityIndicator, Pressable, RefreshControl, ScrollView,
+  StyleSheet, Text, View,
+} from 'react-native';
 import { useFocusEffect } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Haptics from 'expo-haptics';
@@ -10,11 +13,24 @@ import {
   type Bill, type Rent, type AppSettings,
 } from '@/lib/database';
 import { generateDashboardInsights, hasOpenAIKey } from '@/lib/openai';
-import { useTheme } from '@/lib/theme';
+import { useTheme, type Theme } from '@/lib/theme';
 import { logError } from '@/lib/logger';
 import { safeNumber } from '@/lib/dates';
+import { Pill } from '@/components/ui/pill';
+import { Card } from '@/components/ui/card';
+import { PrimaryButton } from '@/components/ui/primary-button';
+import { EmptyState } from '@/components/ui/empty-state';
+import { IconSymbol } from '@/components/ui/icon-symbol';
 
 const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+
+const DEFAULT_APARTMENT = 'My Apartment';
+
+function displayApartment(name: string | undefined | null): string {
+  const n = (name ?? '').trim();
+  if (!n || n === DEFAULT_APARTMENT) return 'My Home';
+  return n;
+}
 
 export default function DashboardScreen() {
   const { top } = useSafeAreaInsets();
@@ -22,7 +38,7 @@ export default function DashboardScreen() {
   const t = useTheme();
   const [bills, setBills] = useState<Bill[]>([]);
   const [rents, setRents] = useState<Rent[]>([]);
-  const [settings, setSettings] = useState<AppSettings>({ apartment_name: 'My Apartment', onboarding_done: 1 });
+  const [settings, setSettings] = useState<AppSettings>({ apartment_name: DEFAULT_APARTMENT, onboarding_done: 1 });
   const [insights, setInsights] = useState<string | null>(null);
   const [loadingInsights, setLoadingInsights] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
@@ -105,6 +121,8 @@ export default function DashboardScreen() {
     .sort((a, b) => b.year !== a.year ? b.year - a.year : b.month - a.month)
     .slice(0, 5);
 
+  const isEmpty = bills.length === 0 && rents.length === 0;
+
   return (
     <ScrollView
       style={[styles.container, { backgroundColor: t.bg }]}
@@ -112,218 +130,241 @@ export default function DashboardScreen() {
       refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={t.primary} />}
     >
       <View style={styles.header}>
-        <View>
+        <View style={{ flex: 1 }}>
           <Text style={[styles.headerSub, { color: t.textSub }]}>Welcome back</Text>
-          {settings.apartment_name && settings.apartment_name !== 'My Apartment' ? (
-            <Text style={[styles.headerTitle, { color: t.text }]}>{settings.apartment_name}</Text>
-          ) : (
-            <Text style={[styles.headerTitle, { color: t.text }]}>My Home</Text>
-          )}
+          <Text style={[styles.headerTitle, { color: t.text }]} numberOfLines={1}>
+            {displayApartment(settings.apartment_name)}
+          </Text>
         </View>
         {ytdTotal > 0 && (
-          <View style={[styles.ytdPill, { backgroundColor: t.primaryLight }]}>
-            <Text style={[styles.ytdPillLabel, { color: t.primary }]}>YTD</Text>
-            <Text style={[styles.ytdPillAmount, { color: t.primaryDark }]}>₹{ytdTotal.toLocaleString('en-IN')}</Text>
+          <View style={[styles.ytdPill, { backgroundColor: t.cardAlt, borderColor: t.border }]}>
+            <Text style={[styles.ytdPillLabel, { color: t.textMuted }]}>YTD</Text>
+            <Text style={[styles.ytdPillAmount, { color: t.text }]}>₹{ytdTotal.toLocaleString('en-IN')}</Text>
           </View>
         )}
       </View>
 
       {totalPendingCount > 0 && (
         <View style={[styles.alertCard, { backgroundColor: t.warningLight, borderLeftColor: t.warning }]}>
-          <Text style={[styles.alertText, { color: t.warning }]}>
+          <Text style={[styles.alertText, { color: t.warningText }]}>
             {totalPendingCount} pending payment{totalPendingCount > 1 ? 's' : ''}
           </Text>
-          <Text style={[styles.alertAmount, { color: t.warning }]}>
+          <Text style={[styles.alertAmount, { color: t.warningText }]}>
             ₹{totalPendingAmount.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
           </Text>
         </View>
       )}
 
-      <Text style={[styles.sectionTitle, { color: t.textSub }]}>
-        This Month — {MONTHS[currentMonth - 1]} {currentYear}
-      </Text>
-
-      <View style={styles.row}>
-        <View style={[styles.card, styles.cardHalf, { backgroundColor: t.card }]}>
-          <Text style={[styles.cardLabel, { color: t.textSub }]}>Electricity</Text>
-          {currentBill ? (
-            <>
-              <Text style={[styles.cardAmount, { color: t.text }]}>₹{currentBill.total_amount.toFixed(2)}</Text>
-              <Text style={[styles.cardUnits, { color: t.textMuted }]}>{currentBill.units_consumed} units</Text>
-              <StatusBadge status={currentBill.status} t={t} />
-              {currentBill.status === 'unpaid' && (
-                <TouchableOpacity style={[styles.quickPayBtn, { backgroundColor: t.primaryLight }]} onPress={() => quickPayBill(currentBill)}>
-                  <Text style={[styles.quickPayText, { color: t.primary }]}>Pay Now</Text>
-                </TouchableOpacity>
-              )}
-            </>
-          ) : (
-            <Text style={[styles.cardEmpty, { color: t.textPlaceholder }]}>Not added yet</Text>
-          )}
+      {isEmpty ? (
+        <View style={{ paddingTop: 24 }}>
+          <EmptyState
+            icon="house.fill"
+            title="Welcome to Home Manager"
+            description="Start by adding your electricity bills and rent payments from the tabs below. Your monthly snapshot will appear here."
+          />
         </View>
-
-        <View style={[styles.card, styles.cardHalf, { backgroundColor: t.card }]}>
-          <Text style={[styles.cardLabel, { color: t.textSub }]}>Rent</Text>
-          {currentRent ? (
-            <>
-              <Text style={[styles.cardAmount, { color: t.text }]}>₹{currentRent.amount.toLocaleString('en-IN')}</Text>
-              <StatusBadge status={currentRent.status} t={t} />
-              {currentRent.status === 'unpaid' && (
-                <TouchableOpacity style={[styles.quickPayBtn, { backgroundColor: t.primaryLight }]} onPress={() => quickPayRent(currentRent)}>
-                  <Text style={[styles.quickPayText, { color: t.primary }]}>Pay Now</Text>
-                </TouchableOpacity>
-              )}
-            </>
-          ) : (
-            <Text style={[styles.cardEmpty, { color: t.textPlaceholder }]}>Not added yet</Text>
-          )}
-        </View>
-      </View>
-
-      {recentItems.length > 0 && (
+      ) : (
         <>
-          <Text style={[styles.sectionTitle, { color: t.textSub }]}>Recent Activity</Text>
-          {recentItems.map(item => (
-            <View key={`${item.type}-${item.id}`} style={[styles.activityCard, { backgroundColor: t.card }]}>
-              <View style={styles.activityLeft}>
-                <Text style={[styles.activityType, { color: t.text }]}>
-                  {item.type === 'bill' ? '⚡ Electricity' : '🏠 Rent'}
-                </Text>
-                <Text style={[styles.activityDate, { color: t.textMuted }]}>{MONTHS[item.month - 1]} {item.year}</Text>
-              </View>
-              <View style={styles.activityRight}>
-                <Text style={[styles.activityAmount, { color: t.text }]}>
-                  ₹{item.type === 'bill'
-                    ? (item as Bill).total_amount.toFixed(2)
-                    : (item as Rent).amount.toLocaleString('en-IN')}
-                </Text>
-                <StatusBadge status={item.status} t={t} small />
-              </View>
-            </View>
-          ))}
-        </>
-      )}
-
-      {hasOpenAIKey() && (bills.length > 0 || rents.length > 0) && (
-        <View style={[styles.insightsCard, { backgroundColor: t.card, borderLeftColor: t.primary }]}>
-          <View style={styles.insightsHeader}>
-            <Text style={[styles.insightsTitle, { color: t.primary }]}>✦ AI Insights</Text>
-            <TouchableOpacity
-              onPress={() => refreshInsights(bills, rents)}
-              disabled={loadingInsights}
-              style={[styles.insightsRefreshBtn, { backgroundColor: t.primaryLight }]}
-            >
-              <Text style={[styles.insightsRefreshText, { color: t.primary }]}>{loadingInsights ? '...' : 'Refresh'}</Text>
-            </TouchableOpacity>
-          </View>
-          {loadingInsights && (
-            <View style={styles.insightsLoading}>
-              <ActivityIndicator size="small" color={t.primary} />
-              <Text style={[styles.insightsLoadingText, { color: t.textSub }]}>Analyzing your expenses...</Text>
-            </View>
-          )}
-          {!loadingInsights && insights && <Text style={[styles.insightsText, { color: t.text }]}>{insights}</Text>}
-          {!loadingInsights && !insights && (
-            <Text style={[styles.insightsEmpty, { color: t.textMuted }]}>Tap Refresh to get AI-powered spending insights.</Text>
-          )}
-        </View>
-      )}
-
-      {bills.length === 0 && rents.length === 0 && (
-        <View style={styles.emptyState}>
-          <Text style={styles.emptyIcon}>🏡</Text>
-          <Text style={[styles.emptyTitle, { color: t.text }]}>Welcome to Home Manager</Text>
-          <Text style={[styles.emptyText, { color: t.textMuted }]}>
-            Start by adding your electricity bills and rent payments from the tabs below. Your monthly snapshot will appear here.
+          <Text style={[styles.sectionTitle, { color: t.textSub }]}>
+            This Month — {MONTHS[currentMonth - 1]} {currentYear}
           </Text>
-        </View>
+
+          <View style={styles.row}>
+            <Card style={styles.cardHalf}>
+              <Text style={[styles.cardLabel, { color: t.textSub }]}>Electricity</Text>
+              {currentBill ? (
+                <>
+                  <Text style={[styles.cardAmount, { color: t.text }]}>₹{currentBill.total_amount.toFixed(2)}</Text>
+                  <Text style={[styles.cardUnits, { color: t.textMuted }]}>{currentBill.units_consumed} units</Text>
+                  <Pill
+                    label={currentBill.status === 'paid' ? 'PAID' : 'UNPAID'}
+                    variant={currentBill.status === 'paid' ? 'success' : 'danger'}
+                    style={{ marginTop: 6 }}
+                  />
+                  {currentBill.status === 'unpaid' && (
+                    <PrimaryButton
+                      label="Pay Now"
+                      onPress={() => quickPayBill(currentBill)}
+                      size="md"
+                      style={{ marginTop: 12 }}
+                    />
+                  )}
+                </>
+              ) : (
+                <Text style={[styles.cardEmpty, { color: t.textPlaceholder }]}>Not added yet</Text>
+              )}
+            </Card>
+
+            <Card style={styles.cardHalf}>
+              <Text style={[styles.cardLabel, { color: t.textSub }]}>Rent</Text>
+              {currentRent ? (
+                <>
+                  <Text style={[styles.cardAmount, { color: t.text }]}>₹{currentRent.amount.toLocaleString('en-IN')}</Text>
+                  <Pill
+                    label={currentRent.status === 'paid' ? 'PAID' : 'UNPAID'}
+                    variant={currentRent.status === 'paid' ? 'success' : 'danger'}
+                    style={{ marginTop: 6 }}
+                  />
+                  {currentRent.status === 'unpaid' && (
+                    <PrimaryButton
+                      label="Pay Now"
+                      onPress={() => quickPayRent(currentRent)}
+                      size="md"
+                      style={{ marginTop: 12 }}
+                    />
+                  )}
+                </>
+              ) : (
+                <Text style={[styles.cardEmpty, { color: t.textPlaceholder }]}>Not added yet</Text>
+              )}
+            </Card>
+          </View>
+
+          {recentItems.length > 0 && (
+            <>
+              <Text style={[styles.sectionTitle, { color: t.textSub }]}>Recent Activity</Text>
+              {recentItems.map(item => (
+                <Card key={`${item.type}-${item.id}`} style={styles.activityCard}>
+                  <View style={styles.activityLeft}>
+                    <View style={styles.activityHeading}>
+                      <IconSymbol
+                        name={item.type === 'bill' ? 'bolt.fill' : 'house.fill'}
+                        size={16}
+                        color={t.textSub}
+                      />
+                      <Text style={[styles.activityType, { color: t.text }]}>
+                        {item.type === 'bill' ? 'Electricity' : 'Rent'}
+                      </Text>
+                    </View>
+                    <Text style={[styles.activityDate, { color: t.textMuted }]}>{MONTHS[item.month - 1]} {item.year}</Text>
+                  </View>
+                  <View style={styles.activityRight}>
+                    <Text style={[styles.activityAmount, { color: t.text }]}>
+                      ₹{item.type === 'bill'
+                        ? (item as Bill).total_amount.toFixed(2)
+                        : (item as Rent).amount.toLocaleString('en-IN')}
+                    </Text>
+                    <Pill
+                      label={item.status === 'paid' ? 'PAID' : 'UNPAID'}
+                      variant={item.status === 'paid' ? 'success' : 'danger'}
+                      size="sm"
+                    />
+                  </View>
+                </Card>
+              ))}
+            </>
+          )}
+
+          {hasOpenAIKey() && (
+            <InsightsCard
+              t={t}
+              insights={insights}
+              loading={loadingInsights}
+              onRefresh={() => refreshInsights(bills, rents)}
+            />
+          )}
+        </>
       )}
     </ScrollView>
   );
 }
 
-function StatusBadge({ status, t, small }: { status: 'paid' | 'unpaid'; t: ReturnType<typeof useTheme>; small?: boolean }) {
+function InsightsCard({
+  t, insights, loading, onRefresh,
+}: {
+  t: Theme;
+  insights: string | null;
+  loading: boolean;
+  onRefresh: () => void;
+}) {
   return (
-    <View style={[
-      styles.badge,
-      { backgroundColor: status === 'paid' ? t.successLight : t.dangerLight },
-      small && styles.badgeSmall,
-    ]}>
-      <Text style={[
-        styles.badgeText,
-        { color: status === 'paid' ? t.success : t.danger },
-        small && styles.badgeTextSmall,
-      ]}>
-        {status === 'paid' ? 'PAID' : 'UNPAID'}
-      </Text>
-    </View>
+    <Card style={[styles.insightsCard, { borderLeftColor: t.primary }]}>
+      <View style={styles.insightsHeader}>
+        <View style={styles.insightsTitleRow}>
+          <IconSymbol name="sparkles" size={14} color={t.primary} />
+          <Text style={[styles.insightsTitle, { color: t.primary }]}>AI Insights</Text>
+        </View>
+        <Pressable
+          onPress={onRefresh}
+          disabled={loading}
+          hitSlop={8}
+          style={({ pressed }) => [
+            styles.insightsRefreshBtn,
+            { backgroundColor: t.primaryLight },
+            pressed && { opacity: 0.7 },
+            loading && { opacity: 0.5 },
+          ]}
+        >
+          <Text style={[styles.insightsRefreshText, { color: t.primaryText }]}>{loading ? '...' : 'Refresh'}</Text>
+        </Pressable>
+      </View>
+      {loading && (
+        <View style={styles.insightsLoading}>
+          <ActivityIndicator size="small" color={t.primary} />
+          <Text style={[styles.insightsLoadingText, { color: t.textSub }]}>Analyzing your expenses...</Text>
+        </View>
+      )}
+      {!loading && insights && <Text style={[styles.insightsText, { color: t.text }]}>{insights}</Text>}
+      {!loading && !insights && (
+        <Text style={[styles.insightsEmpty, { color: t.textMuted }]}>Tap Refresh to get AI-powered spending insights.</Text>
+      )}
+    </Card>
   );
 }
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
   content: { padding: 20, paddingBottom: 40 },
-  header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 20, marginTop: 12 },
-  headerSub: { fontSize: 14, marginBottom: 2 },
-  headerTitle: { fontSize: 26, fontWeight: '700' },
-  ytdPill: { borderRadius: 12, paddingHorizontal: 12, paddingVertical: 8, alignItems: 'center' },
-  ytdPillLabel: { fontSize: 10, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.5 },
-  ytdPillAmount: { fontSize: 14, fontWeight: '800', marginTop: 2 },
+  header: {
+    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start',
+    marginBottom: 20, marginTop: 8, gap: 12,
+  },
+  headerSub: { fontSize: 14, lineHeight: 18, marginBottom: 2 },
+  headerTitle: { fontSize: 26, fontWeight: '700', lineHeight: 32 },
+  ytdPill: {
+    borderRadius: 12, paddingHorizontal: 12, paddingVertical: 8,
+    alignItems: 'flex-end', borderWidth: 1,
+  },
+  ytdPillLabel: { fontSize: 10, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.5, lineHeight: 12 },
+  ytdPillAmount: { fontSize: 14, fontWeight: '700', lineHeight: 18, marginTop: 2 },
   alertCard: {
     borderRadius: 12, padding: 16, marginBottom: 20,
     borderLeftWidth: 4,
     flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
   },
-  alertText: { fontSize: 14, fontWeight: '600' },
-  alertAmount: { fontSize: 16, fontWeight: '700' },
+  alertText: { fontSize: 14, fontWeight: '600', lineHeight: 18 },
+  alertAmount: { fontSize: 16, fontWeight: '700', lineHeight: 20 },
   sectionTitle: {
     fontSize: 12, fontWeight: '700',
-    textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 12,
+    textTransform: 'uppercase', letterSpacing: 0.8,
+    marginBottom: 12, lineHeight: 16,
   },
   row: { flexDirection: 'row', gap: 12, marginBottom: 24 },
-  card: {
-    borderRadius: 16, padding: 16,
-    shadowColor: '#000', shadowOpacity: 0.06, shadowRadius: 8,
-    shadowOffset: { width: 0, height: 2 }, elevation: 2,
-  },
   cardHalf: { flex: 1 },
-  cardLabel: { fontSize: 12, fontWeight: '600', textTransform: 'uppercase', marginBottom: 8 },
-  cardAmount: { fontSize: 20, fontWeight: '700', marginBottom: 2 },
-  cardUnits: { fontSize: 12, marginBottom: 8 },
-  cardEmpty: { fontSize: 14, marginTop: 8, fontStyle: 'italic' },
-  quickPayBtn: { marginTop: 10, borderRadius: 8, paddingVertical: 6, alignItems: 'center' },
-  quickPayText: { fontSize: 12, fontWeight: '700' },
+  cardLabel: { fontSize: 12, fontWeight: '600', textTransform: 'uppercase', marginBottom: 8, lineHeight: 14 },
+  cardAmount: { fontSize: 20, fontWeight: '700', lineHeight: 26, marginBottom: 2 },
+  cardUnits: { fontSize: 12, lineHeight: 16, marginBottom: 4 },
+  cardEmpty: { fontSize: 14, lineHeight: 20, marginTop: 8, fontStyle: 'italic' },
   activityCard: {
-    borderRadius: 12, padding: 14, marginBottom: 8,
+    marginBottom: 8, padding: 14,
     flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
-    shadowColor: '#000', shadowOpacity: 0.04, shadowRadius: 4,
-    shadowOffset: { width: 0, height: 1 }, elevation: 1,
   },
   activityLeft: { flex: 1 },
-  activityType: { fontSize: 15, fontWeight: '600' },
-  activityDate: { fontSize: 12, marginTop: 2 },
-  activityRight: { alignItems: 'flex-end', gap: 4 },
-  activityAmount: { fontSize: 15, fontWeight: '700' },
-  badge: { borderRadius: 6, paddingHorizontal: 8, paddingVertical: 3, alignSelf: 'flex-start', marginTop: 6 },
-  badgeSmall: { paddingHorizontal: 6, paddingVertical: 2, marginTop: 0 },
-  badgeText: { fontSize: 11, fontWeight: '700', letterSpacing: 0.5 },
-  badgeTextSmall: { fontSize: 10 },
-  emptyState: { alignItems: 'center', paddingVertical: 40 },
-  emptyIcon: { fontSize: 56, marginBottom: 16 },
-  emptyTitle: { fontSize: 20, fontWeight: '700', marginBottom: 8 },
-  emptyText: { fontSize: 14, textAlign: 'center', lineHeight: 22, paddingHorizontal: 16 },
+  activityHeading: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  activityType: { fontSize: 15, fontWeight: '600', lineHeight: 20 },
+  activityDate: { fontSize: 12, lineHeight: 16, marginTop: 2 },
+  activityRight: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  activityAmount: { fontSize: 15, fontWeight: '700', lineHeight: 20 },
   insightsCard: {
-    borderRadius: 16, padding: 16, marginBottom: 20,
-    borderLeftWidth: 4,
-    shadowColor: '#000', shadowOpacity: 0.06, shadowRadius: 8,
-    shadowOffset: { width: 0, height: 2 }, elevation: 2,
+    borderLeftWidth: 4, marginBottom: 20,
   },
   insightsHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 },
-  insightsTitle: { fontSize: 13, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.8 },
-  insightsRefreshBtn: { borderRadius: 8, paddingHorizontal: 10, paddingVertical: 4 },
-  insightsRefreshText: { fontSize: 12, fontWeight: '600' },
+  insightsTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  insightsTitle: { fontSize: 13, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.8, lineHeight: 16 },
+  insightsRefreshBtn: { borderRadius: 8, paddingHorizontal: 12, paddingVertical: 6, minHeight: 32, justifyContent: 'center' },
+  insightsRefreshText: { fontSize: 12, fontWeight: '700', lineHeight: 16 },
   insightsLoading: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 4 },
-  insightsLoadingText: { fontSize: 13 },
+  insightsLoadingText: { fontSize: 13, lineHeight: 18 },
   insightsText: { fontSize: 14, lineHeight: 21 },
-  insightsEmpty: { fontSize: 13, fontStyle: 'italic' },
+  insightsEmpty: { fontSize: 13, lineHeight: 18, fontStyle: 'italic' },
 });
