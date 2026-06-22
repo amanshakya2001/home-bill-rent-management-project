@@ -1,6 +1,6 @@
 import { useCallback, useState } from 'react';
 import {
-  Alert, Modal, Pressable, ScrollView, StyleSheet,
+  ActivityIndicator, Alert, Modal, Pressable, RefreshControl, ScrollView, StyleSheet,
   Text, TextInput, View,
 } from 'react-native';
 import { useFocusEffect } from 'expo-router';
@@ -13,6 +13,7 @@ import {
 import { useTheme, type Theme } from '@/lib/theme';
 import { logError } from '@/lib/logger';
 import { ScreenHeader } from '@/components/ui/screen-header';
+import { ErrorBanner } from '@/components/ui/error-banner';
 import { Card } from '@/components/ui/card';
 import { PrimaryButton } from '@/components/ui/primary-button';
 import { SegmentedControl } from '@/components/ui/segmented-control';
@@ -50,28 +51,24 @@ export default function SplitScreen() {
   const [topFloorUnits, setTopFloorUnits] = useState('');
   const [undergroundUnits, setUndergroundUnits] = useState('');
   const [generating, setGenerating] = useState(false);
-  const [generatedMessage, setGeneratedMessage] = useState(`Hi all 👋
-
-Here's the electricity bill split for *1 Mar 2026 – 31 Mar 2026*:
-
-📊 *Total bill:* ₹2,700.00
-⚡ *Per unit rate:* ₹7.50
-
-*Our Floor:* 145 units → *₹1,087.50*
-*Top Floor:* 160 units → *₹1,200.00*
-*Underground:* 55 units → *₹412.50*
-
-Please send your share at your earliest. Thanks!`); // DEV
-  const [showResult, setShowResult] = useState(true); // DEV
+  const [generatedMessage, setGeneratedMessage] = useState('');
+  const [showResult, setShowResult] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
 
   const load = useCallback(async (signal?: { cancelled: boolean }) => {
     try {
       const data = await getSplitRecords();
       if (signal?.cancelled) return;
       setSplitHistory(data);
+      setError(false);
     } catch (err) {
       logError('Split.load', 'Failed to load split history', err);
+      if (!signal?.cancelled) setError(true);
+    } finally {
+      if (!signal?.cancelled) setLoading(false);
     }
   }, []);
 
@@ -80,6 +77,12 @@ Please send your share at your earliest. Thanks!`); // DEV
     load(signal);
     return () => { signal.cancelled = true; };
   }, [load]));
+
+  async function onRefresh() {
+    setRefreshing(true);
+    await load();
+    setRefreshing(false);
+  }
 
   const total = parseFloat(totalAmount || '0');
   const our = parseFloat(ourUnits || '0');
@@ -245,8 +248,15 @@ Please send your share at your earliest. Thanks!`); // DEV
           />
         </ScrollView>
       ) : (
-        <ScrollView contentContainerStyle={styles.content}>
-          {splitHistory.length === 0 ? (
+        <ScrollView
+          contentContainerStyle={styles.content}
+          refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={t.primary} />}
+        >
+          {loading && splitHistory.length === 0 ? (
+            <ActivityIndicator style={{ marginTop: 60 }} size="large" color={t.primary} />
+          ) : error && splitHistory.length === 0 ? (
+            <ErrorBanner onRetry={() => { setLoading(true); load(); }} />
+          ) : splitHistory.length === 0 ? (
             <EmptyState
               icon="list.bullet"
               title="No split history yet"
@@ -265,6 +275,8 @@ Please send your share at your earliest. Thanks!`); // DEV
                   <Pressable
                     onPress={() => deleteHistory(record)}
                     hitSlop={12}
+                    accessibilityRole="button"
+                    accessibilityLabel="Delete split record"
                     style={({ pressed }) => [styles.deleteBtn, pressed && { opacity: 0.5 }]}
                   >
                     <IconSymbol name="xmark" size={18} color={t.textMuted} />
@@ -307,6 +319,8 @@ Please send your share at your earliest. Thanks!`); // DEV
               <Pressable
                 onPress={() => setShowResult(false)}
                 hitSlop={12}
+                accessibilityRole="button"
+                accessibilityLabel="Close"
                 style={({ pressed }) => [styles.modalClose, pressed && { opacity: 0.5 }]}
               >
                 <Text style={[styles.modalCloseText, { color: t.textMuted }]}>✕</Text>

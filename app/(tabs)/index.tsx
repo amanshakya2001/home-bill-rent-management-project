@@ -3,7 +3,7 @@ import {
   ActivityIndicator, Pressable, RefreshControl, ScrollView,
   StyleSheet, Text, View,
 } from 'react-native';
-import { useFocusEffect } from 'expo-router';
+import { router, useFocusEffect } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Haptics from 'expo-haptics';
 
@@ -14,11 +14,13 @@ import {
 import { generateDashboardInsights, hasOpenAIKey } from '@/lib/openai';
 import { useTheme, type Theme } from '@/lib/theme';
 import { logError } from '@/lib/logger';
-import { safeNumber } from '@/lib/dates';
+import { safeNumber, isOverdue } from '@/lib/dates';
 import { Pill } from '@/components/ui/pill';
 import { Card } from '@/components/ui/card';
 import { PrimaryButton } from '@/components/ui/primary-button';
 import { EmptyState } from '@/components/ui/empty-state';
+import { ErrorBanner } from '@/components/ui/error-banner';
+import { Snackbar } from '@/components/ui/snackbar';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 
 const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
@@ -40,6 +42,13 @@ export default function DashboardScreen() {
   const [insights, setInsights] = useState<string | null>(null);
   const [loadingInsights, setLoadingInsights] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(false);
+  const [snackbar, setSnackbar] = useState<{ visible: boolean; message: string; onUndo?: () => void }>({
+    visible: false, message: '',
+  });
+
+  const dismissSnackbar = useCallback(() => setSnackbar(s => ({ ...s, visible: false })), []);
 
   const load = useCallback(async (signal?: { cancelled: boolean }) => {
     try {
@@ -48,8 +57,12 @@ export default function DashboardScreen() {
       setBills(b);
       setRents(r);
       setSettings(s);
+      setError(false);
     } catch (err) {
       logError('Dashboard.load', 'Failed to load dashboard data', err);
+      if (!signal?.cancelled) setError(true);
+    } finally {
+      if (!signal?.cancelled) setLoading(false);
     }
   }, []);
 
@@ -81,15 +94,37 @@ export default function DashboardScreen() {
   }
 
   async function quickPayBill(bill: Bill) {
-    await updateBillStatus(bill.id, 'paid');
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    load();
+    try {
+      await updateBillStatus(bill.id, 'paid');
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+      load();
+      setSnackbar({
+        visible: true,
+        message: 'Electricity bill marked as paid',
+        onUndo: async () => {
+          try { await updateBillStatus(bill.id, 'unpaid'); load(); } finally { dismissSnackbar(); }
+        },
+      });
+    } catch (err) {
+      logError('Dashboard.quickPayBill', 'Failed to mark bill paid', err);
+    }
   }
 
   async function quickPayRent(rent: Rent) {
-    await updateRentStatus(rent.id, 'paid');
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    load();
+    try {
+      await updateRentStatus(rent.id, 'paid');
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+      load();
+      setSnackbar({
+        visible: true,
+        message: 'Rent marked as paid',
+        onUndo: async () => {
+          try { await updateRentStatus(rent.id, 'unpaid'); load(); } finally { dismissSnackbar(); }
+        },
+      });
+    } catch (err) {
+      logError('Dashboard.quickPayRent', 'Failed to mark rent paid', err);
+    }
   }
 
   const now = new Date();
@@ -102,6 +137,12 @@ export default function DashboardScreen() {
   const totalPendingAmount =
     unpaidBills.reduce((s, b) => s + safeNumber(b.total_amount), 0) +
     unpaidRents.reduce((s, r) => s + safeNumber(r.amount), 0);
+
+  // Soonest unpaid item (by month/year) — surfaced at the top of the dashboard.
+  const nextDue = [
+    ...unpaidBills.map(b => ({ type: 'Electricity', month: b.month, year: b.year })),
+    ...unpaidRents.map(r => ({ type: 'Rent', month: r.month, year: r.year })),
+  ].sort((a, b) => (a.year !== b.year ? a.year - b.year : a.month - b.month))[0];
 
   const currentBill = bills.find(b => b.month === currentMonth && b.year === currentYear);
   const currentRent = rents.find(r => r.month === currentMonth && r.year === currentYear);
@@ -122,6 +163,7 @@ export default function DashboardScreen() {
   const isEmpty = bills.length === 0 && rents.length === 0;
 
   return (
+    <View style={{ flex: 1, backgroundColor: t.bg }}>
     <ScrollView
       style={[styles.container, { backgroundColor: t.bg }]}
       contentContainerStyle={[styles.content, { paddingTop: top + 20 }]}
@@ -142,14 +184,28 @@ export default function DashboardScreen() {
         )}
       </View>
 
+      {loading && isEmpty ? (
+        <ActivityIndicator style={{ marginTop: 60 }} size="large" color={t.primary} />
+      ) : error && isEmpty ? (
+        <ErrorBanner onRetry={() => { setLoading(true); load(); }} />
+      ) : (
+      <>
       {totalPendingCount > 0 && (
         <View style={[styles.alertCard, { backgroundColor: t.warningLight, borderLeftColor: t.warning }]}>
-          <Text style={[styles.alertText, { color: t.warningText }]}>
-            {totalPendingCount} pending payment{totalPendingCount > 1 ? 's' : ''}
-          </Text>
-          <Text style={[styles.alertAmount, { color: t.warningText }]}>
-            ₹{totalPendingAmount.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
-          </Text>
+          <View style={styles.alertRow}>
+            <Text style={[styles.alertText, { color: t.warningText }]}>
+              {totalPendingCount} pending payment{totalPendingCount > 1 ? 's' : ''}
+            </Text>
+            <Text style={[styles.alertAmount, { color: t.warningText }]}>
+              ₹{totalPendingAmount.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+            </Text>
+          </View>
+          {nextDue && (
+            <Text style={[styles.alertNext, { color: t.warningText }]}>
+              Next due: {nextDue.type} · {MONTHS[nextDue.month - 1]} {nextDue.year}
+              {isOverdue(nextDue.month, nextDue.year, 'unpaid') ? ' · Overdue' : ''}
+            </Text>
+          )}
         </View>
       )}
 
@@ -158,7 +214,9 @@ export default function DashboardScreen() {
           <EmptyState
             icon="house.fill"
             title="Welcome to Home Manager"
-            description="Start by adding your electricity bills and rent payments from the tabs below. Your monthly snapshot will appear here."
+            description="Start by adding your electricity bills and rent payments. Your monthly snapshot will appear here."
+            actionLabel="+ Add a bill"
+            onAction={() => router.push('/(tabs)/bills')}
           />
         </View>
       ) : (
@@ -263,7 +321,17 @@ export default function DashboardScreen() {
           )}
         </>
       )}
+      </>
+      )}
     </ScrollView>
+    <Snackbar
+      visible={snackbar.visible}
+      message={snackbar.message}
+      actionLabel={snackbar.onUndo ? 'Undo' : undefined}
+      onAction={snackbar.onUndo}
+      onDismiss={dismissSnackbar}
+    />
+    </View>
   );
 }
 
@@ -328,10 +396,11 @@ const styles = StyleSheet.create({
   alertCard: {
     borderRadius: 12, padding: 16, marginBottom: 20,
     borderLeftWidth: 4,
-    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
   },
+  alertRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   alertText: { fontSize: 14, fontWeight: '600', lineHeight: 18 },
   alertAmount: { fontSize: 16, fontWeight: '700', lineHeight: 20 },
+  alertNext: { fontSize: 13, fontWeight: '600', lineHeight: 18, marginTop: 8, opacity: 0.9 },
   sectionTitle: {
     fontSize: 12, fontWeight: '700',
     textTransform: 'uppercase', letterSpacing: 0.8,

@@ -21,6 +21,7 @@ import { Pill } from '@/components/ui/pill';
 import { PrimaryButton } from '@/components/ui/primary-button';
 import { FilterPills } from '@/components/ui/filter-pills';
 import { EmptyState } from '@/components/ui/empty-state';
+import { ErrorBanner } from '@/components/ui/error-banner';
 import { BottomSheet } from '@/components/ui/bottom-sheet';
 import { MonthYearStepper } from '@/components/ui/month-year-stepper';
 import { ActionSheet, type ActionSheetItem } from '@/components/ui/action-sheet';
@@ -48,6 +49,8 @@ export default function BillsScreen() {
   const [search, setSearch] = useState('');
   const [filterStatus, setFilterStatus] = useState<'all' | 'paid' | 'unpaid'>('all');
   const [actionBill, setActionBill] = useState<Bill | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(false);
 
   const now = new Date();
   const [formMonth, setFormMonth] = useState(now.getMonth() + 1);
@@ -65,8 +68,12 @@ export default function BillsScreen() {
       const data = await getBills();
       if (signal?.cancelled) return;
       setBills(data);
+      setError(false);
     } catch (err) {
       logError('Bills.load', 'Failed to load bills', err);
+      if (!signal?.cancelled) setError(true);
+    } finally {
+      if (!signal?.cancelled) setLoading(false);
     }
   }, []);
 
@@ -165,6 +172,11 @@ export default function BillsScreen() {
     if (isNaN(prev) || isNaN(curr) || prev < 0 || curr < 0) { Alert.alert('Error', 'Please enter valid meter readings.'); return; }
     if (curr < prev) { Alert.alert('Error', 'Current reading cannot be less than previous reading.'); return; }
     if (!p || isNaN(p) || p <= 0) { Alert.alert('Error', 'Please enter a valid price per unit.'); return; }
+    const dup = bills.some(b => b.month === formMonth && b.year === formYear && b.id !== editingBill?.id);
+    if (dup) {
+      Alert.alert('Already added', `A bill for ${MONTHS[formMonth - 1]} ${formYear} already exists. Edit that entry instead.`);
+      return;
+    }
     const consumed = curr - prev;
     try {
       if (editingBill) {
@@ -247,11 +259,17 @@ export default function BillsScreen() {
         contentContainerStyle={styles.list}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={t.primary} />}
       >
-        {bills.length === 0 ? (
+        {loading && bills.length === 0 ? (
+          <ActivityIndicator style={{ marginTop: 60 }} size="large" color={t.primary} />
+        ) : error && bills.length === 0 ? (
+          <ErrorBanner onRetry={() => { setLoading(true); load(); }} />
+        ) : bills.length === 0 ? (
           <EmptyState
             icon="bolt.fill"
             title="No bills yet"
-            description='Tap "+ Add" to record your first electricity bill. You can also scan your meter with AI.'
+            description="Record your first electricity bill — you can even scan your meter with AI."
+            actionLabel="+ Add your first bill"
+            onAction={openModal}
           />
         ) : filteredBills.length === 0 ? (
           <EmptyState
@@ -314,6 +332,8 @@ export default function BillsScreen() {
             <Pressable
               onPress={promptScanSource}
               disabled={scanning}
+              accessibilityRole="button"
+              accessibilityLabel="Scan meter photo"
               style={({ pressed }) => [
                 styles.scanBtn,
                 { backgroundColor: scanning ? t.textMuted : t.primary },
@@ -389,6 +409,8 @@ export default function BillsScreen() {
           <Pressable
             onPress={() => setViewImage(null)}
             hitSlop={12}
+            accessibilityRole="button"
+            accessibilityLabel="Close photo"
             style={({ pressed }) => [styles.imageViewerClose, pressed && { opacity: 0.5 }]}
           >
             <Text style={styles.imageViewerCloseText}>✕</Text>
@@ -413,6 +435,7 @@ function BillCard({
   bill: Bill; t: Theme; onPress: () => void; onPay: () => void; onDelete: () => void; onViewImage: () => void;
 }) {
   const swipeRef = useRef<Swipeable>(null);
+  const [imgFailed, setImgFailed] = useState(false);
   const overdue = isOverdue(bill);
 
   function renderRightActions(progress: Animated.AnimatedInterpolation<number>) {
@@ -454,9 +477,13 @@ function BillCard({
             <Text style={[styles.cardTitle, { color: t.text }]}>{MONTHS[bill.month - 1]} {bill.year}</Text>
           </View>
           <View style={styles.cardTopRight}>
-            {bill.image_uri && (
-              <Pressable onPress={onViewImage} hitSlop={4}>
-                <Image source={{ uri: bill.image_uri }} style={[styles.thumbnail, { borderColor: t.border }]} />
+            {bill.image_uri && !imgFailed && (
+              <Pressable onPress={onViewImage} hitSlop={4} accessibilityRole="imagebutton" accessibilityLabel="View meter photo">
+                <Image
+                  source={{ uri: bill.image_uri }}
+                  style={[styles.thumbnail, { borderColor: t.border }]}
+                  onError={() => setImgFailed(true)}
+                />
               </Pressable>
             )}
             <Pill
