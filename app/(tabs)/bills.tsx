@@ -13,6 +13,7 @@ import {
   updateBillImage, getLastBillReading, getLastBillPricePerUnit, type Bill,
 } from '@/lib/database';
 import { readMeterFromImage } from '@/lib/openai';
+import { uploadBillImage, isRemoteImage } from '@/lib/storage';
 import { useTheme, type Theme } from '@/lib/theme';
 import { isOverdue as isOverdueShared, safeParseFloat } from '@/lib/dates';
 import { logError } from '@/lib/logger';
@@ -51,6 +52,7 @@ export default function BillsScreen() {
   const [actionBill, setActionBill] = useState<Bill | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
+  const [saving, setSaving] = useState(false);
 
   const now = new Date();
   const [formMonth, setFormMonth] = useState(now.getMonth() + 1);
@@ -178,18 +180,31 @@ export default function BillsScreen() {
       return;
     }
     const consumed = curr - prev;
+    setSaving(true);
     try {
+      // Upload a newly-picked local photo to Supabase Storage so it syncs across
+      // devices. If the upload fails (e.g. offline), fall back to the local URI.
+      let imageToSave = meterImage;
+      if (meterImage && !isRemoteImage(meterImage)) {
+        try {
+          imageToSave = await uploadBillImage(meterImage);
+        } catch (uploadErr) {
+          logError('Bills.saveBill', 'Image upload failed; keeping local copy', uploadErr);
+        }
+      }
       if (editingBill) {
         await updateBill(editingBill.id, { month: formMonth, year: formYear, previous_reading: prev, current_reading: curr, units_consumed: consumed, price_per_unit: p, total_amount: consumed * p });
-        if (meterImage !== editingBill.image_uri) await updateBillImage(editingBill.id, meterImage);
+        if (imageToSave !== editingBill.image_uri) await updateBillImage(editingBill.id, imageToSave);
       } else {
-        await addBill({ month: formMonth, year: formYear, previous_reading: prev, current_reading: curr, units_consumed: consumed, price_per_unit: p, total_amount: consumed * p, status: 'unpaid', paid_date: null, image_uri: meterImage });
+        await addBill({ month: formMonth, year: formYear, previous_reading: prev, current_reading: curr, units_consumed: consumed, price_per_unit: p, total_amount: consumed * p, status: 'unpaid', paid_date: null, image_uri: imageToSave });
       }
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       setEditingBill(null); setShowModal(false); load();
     } catch (err) {
       logError('Bills.saveBill', 'Failed to save bill', err);
       Alert.alert('Error', 'Could not save bill. Please try again.');
+    } finally {
+      setSaving(false);
     }
   }
 
@@ -396,8 +411,10 @@ export default function BillsScreen() {
           </View>
 
           <PrimaryButton
-            label={editingBill ? 'Update Bill' : 'Save Bill'}
+            label={saving ? 'Saving…' : editingBill ? 'Update Bill' : 'Save Bill'}
             onPress={saveBill}
+            loading={saving}
+            disabled={saving}
             size="lg"
             style={{ marginTop: 20, marginBottom: 8 }}
           />
