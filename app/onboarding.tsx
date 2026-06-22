@@ -3,7 +3,6 @@ import {
   KeyboardAvoidingView, Platform, Pressable, StyleSheet, Text, TextInput, View,
 } from 'react-native';
 import { router } from 'expo-router';
-import { useSQLiteContext } from 'expo-sqlite';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Haptics from 'expo-haptics';
 
@@ -33,7 +32,6 @@ const STEPS = [
 
 export default function OnboardingScreen() {
   const { top, bottom } = useSafeAreaInsets();
-  const db = useSQLiteContext();
   const t = useTheme();
   const [step, setStep] = useState(0);
   const [apartmentName, setApartmentName] = useState('');
@@ -44,8 +42,8 @@ export default function OnboardingScreen() {
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     try {
       const trimmed = apartmentName.trim();
-      if (trimmed) await updateApartmentName(db, trimmed);
-      await markOnboardingDone(db);
+      if (trimmed) await updateApartmentName(trimmed);
+      await markOnboardingDone();
     } catch (err) {
       logError('onboarding.finish', 'Failed to save settings', err);
     }
@@ -58,7 +56,7 @@ export default function OnboardingScreen() {
   }
 
   async function skip() {
-    try { await markOnboardingDone(db); } catch (err) { logError('onboarding.skip', 'Failed to mark done', err); }
+    try { await markOnboardingDone(); } catch (err) { logError('onboarding.skip', 'Failed to mark done', err); }
     router.replace('/(tabs)');
   }
 

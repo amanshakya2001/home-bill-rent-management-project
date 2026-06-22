@@ -1,4 +1,3 @@
-import { useSQLiteContext } from 'expo-sqlite';
 import { useCallback, useRef, useState } from 'react';
 import {
   ActivityIndicator, Alert, Animated, Image, Modal, Pressable,
@@ -39,7 +38,6 @@ const FILTERS = [
 const isOverdue = (b: Bill) => isOverdueShared(b.month, b.year, b.status);
 
 export default function BillsScreen() {
-  const db = useSQLiteContext();
   const t = useTheme();
   const [bills, setBills] = useState<Bill[]>([]);
   const [refreshing, setRefreshing] = useState(false);
@@ -64,13 +62,13 @@ export default function BillsScreen() {
 
   const load = useCallback(async (signal?: { cancelled: boolean }) => {
     try {
-      const data = await getBills(db);
+      const data = await getBills();
       if (signal?.cancelled) return;
       setBills(data);
     } catch (err) {
       logError('Bills.load', 'Failed to load bills', err);
     }
-  }, [db]);
+  }, []);
 
   useFocusEffect(useCallback(() => {
     const signal = { cancelled: false };
@@ -110,8 +108,8 @@ export default function BillsScreen() {
     setCurrReading(''); setMeterImage(null); setScanning(false);
     try {
       const [lastReading, lastPrice] = await Promise.all([
-        getLastBillReading(db),
-        getLastBillPricePerUnit(db),
+        getLastBillReading(),
+        getLastBillPricePerUnit(),
       ]);
       setPrevReading(lastReading !== null ? String(lastReading) : '');
       setPricePerUnit(lastPrice !== null ? String(lastPrice) : '');
@@ -170,10 +168,10 @@ export default function BillsScreen() {
     const consumed = curr - prev;
     try {
       if (editingBill) {
-        await updateBill(db, editingBill.id, { month: formMonth, year: formYear, previous_reading: prev, current_reading: curr, units_consumed: consumed, price_per_unit: p, total_amount: consumed * p });
-        if (meterImage !== editingBill.image_uri) await updateBillImage(db, editingBill.id, meterImage);
+        await updateBill(editingBill.id, { month: formMonth, year: formYear, previous_reading: prev, current_reading: curr, units_consumed: consumed, price_per_unit: p, total_amount: consumed * p });
+        if (meterImage !== editingBill.image_uri) await updateBillImage(editingBill.id, meterImage);
       } else {
-        await addBill(db, { month: formMonth, year: formYear, previous_reading: prev, current_reading: curr, units_consumed: consumed, price_per_unit: p, total_amount: consumed * p, status: 'unpaid', paid_date: null, image_uri: meterImage });
+        await addBill({ month: formMonth, year: formYear, previous_reading: prev, current_reading: curr, units_consumed: consumed, price_per_unit: p, total_amount: consumed * p, status: 'unpaid', paid_date: null, image_uri: meterImage });
       }
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       setEditingBill(null); setShowModal(false); load();
@@ -186,7 +184,7 @@ export default function BillsScreen() {
   async function toggleStatus(bill: Bill) {
     const newStatus = bill.status === 'paid' ? 'unpaid' : 'paid';
     try {
-      await updateBillStatus(db, bill.id, newStatus);
+      await updateBillStatus(bill.id, newStatus);
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
       load();
     } catch (err) {
@@ -200,7 +198,7 @@ export default function BillsScreen() {
       { text: 'Cancel', style: 'cancel' },
       { text: 'Delete', style: 'destructive', onPress: async () => {
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
-        await deleteBill(db, bill.id); load();
+        await deleteBill(bill.id); load();
       }},
     ]);
   }
@@ -214,7 +212,7 @@ export default function BillsScreen() {
       items.push({ label: 'View Meter Photo', onPress: () => setViewImage(bill.image_uri) });
       items.push({
         label: 'Remove Photo', destructive: true,
-        onPress: async () => { await updateBillImage(db, bill.id, null); load(); },
+        onPress: async () => { await updateBillImage(bill.id, null); load(); },
       });
     }
     items.push({ label: 'Delete Bill', destructive: true, onPress: () => handleDelete(bill) });

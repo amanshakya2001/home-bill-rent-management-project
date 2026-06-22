@@ -1,4 +1,3 @@
-import { useSQLiteContext } from 'expo-sqlite';
 import { useCallback, useState } from 'react';
 import {
   Pressable, ScrollView, StyleSheet, Text, View,
@@ -23,7 +22,6 @@ const TABS = [
 ];
 
 export default function AnalyticsScreen() {
-  const db = useSQLiteContext();
   const t = useTheme();
   const [bills, setBills] = useState<Bill[]>([]);
   const [rents, setRents] = useState<Rent[]>([]);
@@ -34,14 +32,14 @@ export default function AnalyticsScreen() {
 
   const load = useCallback(async (signal?: { cancelled: boolean }) => {
     try {
-      const [b, r] = await Promise.all([getBills(db), getRentPayments(db)]);
+      const [b, r] = await Promise.all([getBills(), getRentPayments()]);
       if (signal?.cancelled) return;
       setBills(b);
       setRents(r);
     } catch (err) {
       logError('Analytics.load', 'Failed to load analytics data', err);
     }
-  }, [db]);
+  }, []);
 
   useFocusEffect(useCallback(() => {
     const signal = { cancelled: false };
