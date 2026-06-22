@@ -1,12 +1,12 @@
 import { ThemeProvider, DarkTheme, DefaultTheme } from '@react-navigation/native';
 import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
-import { SQLiteProvider } from 'expo-sqlite';
+import { useEffect, useState } from 'react';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { useColorScheme } from 'react-native';
 import 'react-native-reanimated';
 
-import { initDatabase } from '@/lib/database';
+import { loadInitialState } from '@/lib/database';
 import { ErrorBoundary } from '@/components/error-boundary';
 
 export const unstable_settings = { anchor: '(tabs)' };
@@ -25,12 +25,20 @@ function AppNavigator() {
 }
 
 export default function RootLayout() {
+  const [ready, setReady] = useState(false);
+
+  useEffect(() => {
+    // Fetch onboarding state from Supabase before rendering the navigator,
+    // so the tab layout can decide whether to redirect to onboarding.
+    loadInitialState().finally(() => setReady(true));
+  }, []);
+
+  if (!ready) return null;
+
   return (
     <ErrorBoundary>
       <GestureHandlerRootView style={{ flex: 1 }}>
-        <SQLiteProvider databaseName="home-manager.db" onInit={initDatabase}>
-          <AppNavigator />
-        </SQLiteProvider>
+        <AppNavigator />
       </GestureHandlerRootView>
     </ErrorBoundary>
   );

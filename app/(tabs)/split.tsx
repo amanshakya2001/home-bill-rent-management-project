@@ -1,4 +1,3 @@
-import { useSQLiteContext } from 'expo-sqlite';
 import { useCallback, useState } from 'react';
 import {
   Alert, Modal, Pressable, ScrollView, StyleSheet,
@@ -35,7 +34,6 @@ function clampDayInput(input: string): string {
 type ActiveTab = 'calculator' | 'history';
 
 export default function SplitScreen() {
-  const db = useSQLiteContext();
   const t = useTheme();
   const now = new Date();
   const [activeTab, setActiveTab] = useState<ActiveTab>('calculator');
@@ -69,13 +67,13 @@ Please send your share at your earliest. Thanks!`); // DEV
 
   const load = useCallback(async (signal?: { cancelled: boolean }) => {
     try {
-      const data = await getSplitRecords(db);
+      const data = await getSplitRecords();
       if (signal?.cancelled) return;
       setSplitHistory(data);
     } catch (err) {
       logError('Split.load', 'Failed to load split history', err);
     }
-  }, [db]);
+  }, []);
 
   useFocusEffect(useCallback(() => {
     const signal = { cancelled: false };
@@ -117,7 +115,7 @@ Please send your share at your earliest. Thanks!`); // DEV
       setGeneratedMessage(msg);
       setCopied(false);
       setShowResult(true);
-      await addSplitRecord(db, {
+      await addSplitRecord({
         period: data.period, total_amount: total, total_units: totalUnits, per_unit: perUnit,
         our_units: our, our_amount: ourAmount,
         top_floor_units: topFloor, top_floor_amount: topAmount,
@@ -140,7 +138,7 @@ Please send your share at your earliest. Thanks!`); // DEV
   async function deleteHistory(record: SplitRecord) {
     Alert.alert('Delete Split', `Delete split record for ${record.period}?`, [
       { text: 'Cancel', style: 'cancel' },
-      { text: 'Delete', style: 'destructive', onPress: async () => { await deleteSplitRecord(db, record.id); load(); } },
+      { text: 'Delete', style: 'destructive', onPress: async () => { await deleteSplitRecord(record.id); load(); } },
     ]);
   }
 

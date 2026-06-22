@@ -46,3 +46,8 @@ app-example
 # generated native folders (run `npx expo prebuild` to regenerate)
 /ios
 /android
+
+# local migration data — personal SQLite export, never commit
+migration/*.db
+migration/*.db-wal
+migration/*.db-shm

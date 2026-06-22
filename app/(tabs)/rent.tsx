@@ -1,4 +1,3 @@
-import { useSQLiteContext } from 'expo-sqlite';
 import { useCallback, useRef, useState } from 'react';
 import {
   Alert, Animated, Pressable, RefreshControl, ScrollView,
@@ -36,7 +35,6 @@ const FILTERS = [
 const isOverdue = (r: Rent) => isOverdueShared(r.month, r.year, r.status);
 
 export default function RentScreen() {
-  const db = useSQLiteContext();
   const t = useTheme();
   const [rents, setRents] = useState<Rent[]>([]);
   const [refreshing, setRefreshing] = useState(false);
@@ -53,13 +51,13 @@ export default function RentScreen() {
 
   const load = useCallback(async (signal?: { cancelled: boolean }) => {
     try {
-      const data = await getRentPayments(db);
+      const data = await getRentPayments();
       if (signal?.cancelled) return;
       setRents(data);
     } catch (err) {
       logError('Rent.load', 'Failed to load rent payments', err);
     }
-  }, [db]);
+  }, []);
 
   useFocusEffect(useCallback(() => {
     const signal = { cancelled: false };
@@ -99,7 +97,7 @@ export default function RentScreen() {
     setFormMonth(n.getMonth() + 1);
     setFormYear(n.getFullYear());
     try {
-      const last = await getLastRentAmount(db);
+      const last = await getLastRentAmount();
       setAmount(last !== null ? String(last) : '');
     } catch (err) {
       logError('Rent.openModal', 'Failed to prefill rent amount', err);
@@ -121,9 +119,9 @@ export default function RentScreen() {
     if (!a || isNaN(a) || a <= 0) { Alert.alert('Error', 'Please enter a valid rent amount.'); return; }
     try {
       if (editingRent) {
-        await updateRentPayment(db, editingRent.id, { month: formMonth, year: formYear, amount: a });
+        await updateRentPayment(editingRent.id, { month: formMonth, year: formYear, amount: a });
       } else {
-        await addRentPayment(db, { month: formMonth, year: formYear, amount: a, status: 'unpaid', paid_date: null });
+        await addRentPayment({ month: formMonth, year: formYear, amount: a, status: 'unpaid', paid_date: null });
       }
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       setEditingRent(null);
@@ -138,7 +136,7 @@ export default function RentScreen() {
   async function toggleStatus(rent: Rent) {
     const newStatus = rent.status === 'paid' ? 'unpaid' : 'paid';
     try {
-      await updateRentStatus(db, rent.id, newStatus);
+      await updateRentStatus(rent.id, newStatus);
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
       load();
     } catch (err) {
@@ -153,7 +151,7 @@ export default function RentScreen() {
       {
         text: 'Delete', style: 'destructive', onPress: async () => {
           Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
-          await deleteRentPayment(db, rent.id);
+          await deleteRentPayment(rent.id);
           load();
         },
       },

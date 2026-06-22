@@ -1,4 +1,3 @@
-import { useSQLiteContext } from 'expo-sqlite';
 import { useCallback, useState } from 'react';
 import {
   ActivityIndicator, Pressable, RefreshControl, ScrollView,
@@ -34,7 +33,6 @@ function displayApartment(name: string | undefined | null): string {
 
 export default function DashboardScreen() {
   const { top } = useSafeAreaInsets();
-  const db = useSQLiteContext();
   const t = useTheme();
   const [bills, setBills] = useState<Bill[]>([]);
   const [rents, setRents] = useState<Rent[]>([]);
@@ -45,7 +43,7 @@ export default function DashboardScreen() {
 
   const load = useCallback(async (signal?: { cancelled: boolean }) => {
     try {
-      const [b, r, s] = await Promise.all([getBills(db), getRentPayments(db), getSettings(db)]);
+      const [b, r, s] = await Promise.all([getBills(), getRentPayments(), getSettings()]);
       if (signal?.cancelled) return;
       setBills(b);
       setRents(r);
@@ -53,7 +51,7 @@ export default function DashboardScreen() {
     } catch (err) {
       logError('Dashboard.load', 'Failed to load dashboard data', err);
     }
-  }, [db]);
+  }, []);
 
   useFocusEffect(useCallback(() => {
     const signal = { cancelled: false };
@@ -83,13 +81,13 @@ export default function DashboardScreen() {
   }
 
   async function quickPayBill(bill: Bill) {
-    await updateBillStatus(db, bill.id, 'paid');
+    await updateBillStatus(bill.id, 'paid');
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     load();
   }
 
   async function quickPayRent(rent: Rent) {
-    await updateRentStatus(db, rent.id, 'paid');
+    await updateRentStatus(rent.id, 'paid');
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     load();
   }

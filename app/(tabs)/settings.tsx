@@ -1,4 +1,3 @@
-import { useSQLiteContext } from 'expo-sqlite';
 import { useCallback, useState } from 'react';
 import {
   Alert, Pressable, ScrollView, StyleSheet, Text, TextInput, View,
@@ -16,7 +15,6 @@ import { PrimaryButton } from '@/components/ui/primary-button';
 
 export default function SettingsScreen() {
   const { top, bottom } = useSafeAreaInsets();
-  const db = useSQLiteContext();
   const t = useTheme();
   const [settings, setSettings] = useState<AppSettings>({
     apartment_name: 'My Apartment',
@@ -29,14 +27,14 @@ export default function SettingsScreen() {
 
   const load = useCallback(async (signal?: { cancelled: boolean }) => {
     try {
-      const s = await getSettings(db);
+      const s = await getSettings();
       if (signal?.cancelled) return;
       setSettings(s);
       setDirty(false);
     } catch (err) {
       logError('Settings.load', 'Failed to load settings', err);
     }
-  }, [db]);
+  }, []);
 
   useFocusEffect(useCallback(() => {
     const signal = { cancelled: false };
@@ -51,7 +49,7 @@ export default function SettingsScreen() {
 
   async function handleCopyCSV() {
     try {
-      const [bills, rents] = await Promise.all([getBills(db), getRentPayments(db)]);
+      const [bills, rents] = await Promise.all([getBills(), getRentPayments()]);
       const csv = buildCSV(bills, rents, settings, exportYear);
       await Clipboard.setStringAsync(csv);
       setCopied(true);
@@ -67,7 +65,7 @@ export default function SettingsScreen() {
       return;
     }
     try {
-      await updateApartmentName(db, settings.apartment_name.trim());
+      await updateApartmentName(settings.apartment_name.trim());
       setDirty(false);
       Alert.alert('Saved', 'Settings updated successfully.');
     } catch (err) {
