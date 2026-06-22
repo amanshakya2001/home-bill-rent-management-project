@@ -85,3 +85,27 @@ create policy "anon full access" on public.split_records
 drop policy if exists "anon full access" on public.app_settings;
 create policy "anon full access" on public.app_settings
   for all to anon using (true) with check (true);
+
+-- ---------------------------------------------------------------------------
+-- Storage — public bucket for meter photos so images sync across devices
+-- ---------------------------------------------------------------------------
+
+insert into storage.buckets (id, name, public)
+values ('bill-images', 'bill-images', true)
+on conflict (id) do nothing;
+
+drop policy if exists "anon read bill-images" on storage.objects;
+create policy "anon read bill-images" on storage.objects
+  for select to anon using (bucket_id = 'bill-images');
+
+drop policy if exists "anon insert bill-images" on storage.objects;
+create policy "anon insert bill-images" on storage.objects
+  for insert to anon with check (bucket_id = 'bill-images');
+
+drop policy if exists "anon update bill-images" on storage.objects;
+create policy "anon update bill-images" on storage.objects
+  for update to anon using (bucket_id = 'bill-images') with check (bucket_id = 'bill-images');
+
+drop policy if exists "anon delete bill-images" on storage.objects;
+create policy "anon delete bill-images" on storage.objects
+  for delete to anon using (bucket_id = 'bill-images');
