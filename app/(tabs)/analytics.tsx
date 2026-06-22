@@ -1,6 +1,6 @@
 import { useCallback, useState } from 'react';
 import {
-  Pressable, ScrollView, StyleSheet, Text, View,
+  ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View,
 } from 'react-native';
 import { useFocusEffect } from 'expo-router';
 import { BarChart } from 'react-native-gifted-charts';
@@ -9,6 +9,7 @@ import { getBills, getRentPayments, type Bill, type Rent } from '@/lib/database'
 import { useTheme, type Theme } from '@/lib/theme';
 import { logError } from '@/lib/logger';
 import { ScreenHeader } from '@/components/ui/screen-header';
+import { ErrorBanner } from '@/components/ui/error-banner';
 import { Card } from '@/components/ui/card';
 import { SegmentedControl } from '@/components/ui/segmented-control';
 
@@ -26,6 +27,8 @@ export default function AnalyticsScreen() {
   const [bills, setBills] = useState<Bill[]>([]);
   const [rents, setRents] = useState<Rent[]>([]);
   const [tab, setTab] = useState<Tab>('electricity');
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(false);
 
   const now = new Date();
   const [selectedYear, setSelectedYear] = useState(now.getFullYear());
@@ -36,8 +39,12 @@ export default function AnalyticsScreen() {
       if (signal?.cancelled) return;
       setBills(b);
       setRents(r);
+      setError(false);
     } catch (err) {
       logError('Analytics.load', 'Failed to load analytics data', err);
+      if (!signal?.cancelled) setError(true);
+    } finally {
+      if (!signal?.cancelled) setLoading(false);
     }
   }, []);
 
@@ -120,6 +127,11 @@ export default function AnalyticsScreen() {
         }
       />
 
+      {loading && bills.length === 0 && rents.length === 0 ? (
+        <ActivityIndicator style={{ marginTop: 60 }} size="large" color={t.primary} />
+      ) : error && bills.length === 0 && rents.length === 0 ? (
+        <ErrorBanner onRetry={() => { setLoading(true); load(); }} />
+      ) : (
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
         <Card style={[styles.ytdCard, { backgroundColor: t.primary }]}>
           <Text style={styles.ytdLabel}>Total Paid {selectedYear}</Text>
@@ -204,6 +216,7 @@ export default function AnalyticsScreen() {
           </>
         )}
       </ScrollView>
+      )}
     </View>
   );
 }

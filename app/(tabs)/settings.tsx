@@ -1,12 +1,12 @@
 import { useCallback, useState } from 'react';
 import {
-  Alert, Pressable, ScrollView, StyleSheet, Text, TextInput, View,
+  Alert, Pressable, RefreshControl, ScrollView, Share, StyleSheet, Text, TextInput, View,
 } from 'react-native';
 import { useFocusEffect } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Clipboard from 'expo-clipboard';
 
-import { getSettings, updateApartmentName, getBills, getRentPayments, type AppSettings } from '@/lib/database';
+import { getSettings, updateApartmentName, getBills, getRentPayments, getSplitRecords, type AppSettings } from '@/lib/database';
 import { useTheme } from '@/lib/theme';
 import { buildCSV } from '@/lib/export';
 import { logError } from '@/lib/logger';
@@ -22,8 +22,15 @@ export default function SettingsScreen() {
   });
   const [dirty, setDirty] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const now = new Date();
   const [exportYear, setExportYear] = useState(now.getFullYear());
+
+  async function onRefresh() {
+    setRefreshing(true);
+    await load();
+    setRefreshing(false);
+  }
 
   const load = useCallback(async (signal?: { cancelled: boolean }) => {
     try {
@@ -47,15 +54,31 @@ export default function SettingsScreen() {
     setDirty(true);
   }
 
+  async function buildExportCSV(): Promise<string> {
+    const [bills, rents, splits] = await Promise.all([getBills(), getRentPayments(), getSplitRecords()]);
+    return buildCSV(bills, rents, settings, exportYear, splits);
+  }
+
   async function handleCopyCSV() {
     try {
-      const [bills, rents] = await Promise.all([getBills(), getRentPayments()]);
-      const csv = buildCSV(bills, rents, settings, exportYear);
+      const csv = await buildExportCSV();
       await Clipboard.setStringAsync(csv);
       setCopied(true);
       setTimeout(() => setCopied(false), 3000);
     } catch (e: any) {
       Alert.alert('Export failed', e.message ?? 'Unknown error');
+    }
+  }
+
+  async function handleShareCSV() {
+    try {
+      const csv = await buildExportCSV();
+      await Share.share({
+        title: `${settings.apartment_name} ${exportYear} Statement`,
+        message: csv,
+      });
+    } catch (e: any) {
+      Alert.alert('Share failed', e.message ?? 'Unknown error');
     }
   }
 
@@ -82,6 +105,7 @@ export default function SettingsScreen() {
           { paddingTop: top + 20, paddingBottom: dirty ? bottom + 96 : bottom + 20 },
         ]}
         keyboardShouldPersistTaps="handled"
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={t.primary} />}
       >
         <Text style={[styles.screenTitle, { color: t.text }]}>Settings</Text>
 
@@ -111,6 +135,8 @@ export default function SettingsScreen() {
                 <Pressable
                   onPress={() => setExportYear(y => y - 1)}
                   hitSlop={8}
+                  accessibilityRole="button"
+                  accessibilityLabel="Previous year"
                   style={({ pressed }) => [styles.yearArrow, pressed && { opacity: 0.5 }]}
                 >
                   <Text style={[styles.yearArrowText, { color: t.primary }]}>‹</Text>
@@ -120,6 +146,8 @@ export default function SettingsScreen() {
                   onPress={() => setExportYear(y => y + 1)}
                   disabled={exportYear >= now.getFullYear()}
                   hitSlop={8}
+                  accessibilityRole="button"
+                  accessibilityLabel="Next year"
                   style={({ pressed }) => [styles.yearArrow, pressed && { opacity: 0.5 }]}
                 >
                   <Text style={[styles.yearArrowText, { color: exportYear >= now.getFullYear() ? t.textPlaceholder : t.primary }]}>›</Text>
@@ -131,6 +159,13 @@ export default function SettingsScreen() {
                 label={copied ? '✓ Copied to Clipboard' : 'Copy CSV'}
                 onPress={handleCopyCSV}
                 variant={copied ? 'success' : 'tonal'}
+                size="md"
+              />
+              <View style={{ height: 10 }} />
+              <PrimaryButton
+                label="Share CSV"
+                onPress={handleShareCSV}
+                variant="primary"
                 size="md"
               />
             </View>

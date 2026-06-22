@@ -1,6 +1,6 @@
 import { useCallback, useRef, useState } from 'react';
 import {
-  Alert, Animated, Pressable, RefreshControl, ScrollView,
+  ActivityIndicator, Alert, Animated, Pressable, RefreshControl, ScrollView,
   StyleSheet, Text, TextInput, View,
 } from 'react-native';
 import { useFocusEffect } from 'expo-router';
@@ -19,6 +19,7 @@ import { Pill } from '@/components/ui/pill';
 import { PrimaryButton } from '@/components/ui/primary-button';
 import { FilterPills } from '@/components/ui/filter-pills';
 import { EmptyState } from '@/components/ui/empty-state';
+import { ErrorBanner } from '@/components/ui/error-banner';
 import { BottomSheet } from '@/components/ui/bottom-sheet';
 import { MonthYearStepper } from '@/components/ui/month-year-stepper';
 import { ActionSheet, type ActionSheetItem } from '@/components/ui/action-sheet';
@@ -43,6 +44,8 @@ export default function RentScreen() {
   const [search, setSearch] = useState('');
   const [filterStatus, setFilterStatus] = useState<'all' | 'paid' | 'unpaid'>('all');
   const [actionRent, setActionRent] = useState<Rent | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(false);
 
   const now = new Date();
   const [formMonth, setFormMonth] = useState(now.getMonth() + 1);
@@ -54,8 +57,12 @@ export default function RentScreen() {
       const data = await getRentPayments();
       if (signal?.cancelled) return;
       setRents(data);
+      setError(false);
     } catch (err) {
       logError('Rent.load', 'Failed to load rent payments', err);
+      if (!signal?.cancelled) setError(true);
+    } finally {
+      if (!signal?.cancelled) setLoading(false);
     }
   }, []);
 
@@ -117,6 +124,11 @@ export default function RentScreen() {
   async function saveRent() {
     const a = parseFloat(amount);
     if (!a || isNaN(a) || a <= 0) { Alert.alert('Error', 'Please enter a valid rent amount.'); return; }
+    const dup = rents.some(r => r.month === formMonth && r.year === formYear && r.id !== editingRent?.id);
+    if (dup) {
+      Alert.alert('Already added', `Rent for ${MONTHS[formMonth - 1]} ${formYear} already exists. Edit that entry instead.`);
+      return;
+    }
     try {
       if (editingRent) {
         await updateRentPayment(editingRent.id, { month: formMonth, year: formYear, amount: a });
@@ -201,11 +213,17 @@ export default function RentScreen() {
         contentContainerStyle={styles.list}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={t.primary} />}
       >
-        {rents.length === 0 ? (
+        {loading && rents.length === 0 ? (
+          <ActivityIndicator style={{ marginTop: 60 }} size="large" color={t.primary} />
+        ) : error && rents.length === 0 ? (
+          <ErrorBanner onRetry={() => { setLoading(true); load(); }} />
+        ) : rents.length === 0 ? (
           <EmptyState
             icon="house.fill"
             title="No rent records yet"
-            description='Tap "+ Add" above to record your first rent payment and track monthly status.'
+            description="Record your first rent payment and track its monthly status."
+            actionLabel="+ Add your first rent"
+            onAction={openModal}
           />
         ) : filteredRents.length === 0 ? (
           <EmptyState

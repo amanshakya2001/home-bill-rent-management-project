@@ -1,4 +1,4 @@
-import type { Bill, Rent, AppSettings } from './database';
+import type { Bill, Rent, AppSettings, SplitRecord } from './database';
 
 const MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December'];
 
@@ -20,6 +20,7 @@ export function buildCSV(
   rents: Rent[],
   settings: AppSettings,
   year: number,
+  splits: SplitRecord[] = [],
 ): string {
   const yearBills = bills.filter(b => b.year === year).sort((a, b) => a.month - b.month);
   const yearRents = rents.filter(r => r.year === year).sort((a, b) => a.month - b.month);
@@ -55,6 +56,22 @@ export function buildCSV(
     csvRow(['Total Rent Paid', totalRentPaid.toFixed(2)]),
     csvRow(['Grand Total', (totalBillPaid + totalRentPaid).toFixed(2)]),
   ];
+
+  if (splits.length > 0) {
+    lines.push(
+      '',
+      csvRow(['Bill Splits']),
+      csvRow(['Period', 'Total (INR)', 'Per Unit', 'Our Units', 'Our Amount', 'Top Floor Units', 'Top Floor Amount', 'Underground Units', 'Underground Amount']),
+      ...splits.map(s => csvRow([
+        s.period,
+        s.total_amount.toFixed(2),
+        s.per_unit.toFixed(2),
+        s.our_units.toFixed(0), s.our_amount.toFixed(2),
+        s.top_floor_units.toFixed(0), s.top_floor_amount.toFixed(2),
+        s.underground_units.toFixed(0), s.underground_amount.toFixed(2),
+      ])),
+    );
+  }
 
   return lines.join('\n');
 }
